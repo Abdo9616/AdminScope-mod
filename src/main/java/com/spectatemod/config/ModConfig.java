@@ -11,7 +11,8 @@ public class ModConfig {
         "- spectate_cooldown: Cooldown time in seconds before an admin can spectate again after stopping.\n" +
         "- prevent_combat_spectate: If true, prevents spectating when the admin is in combat or near hostile mobs.\n" +
         "- combat_check_radius: Radius in blocks to check for hostile mobs when prevent_combat_spectate is enabled.\n" +
-        "- save_spectate_positions: If true, saves spectate positions to disk to prevent data loss on crashes.";
+        "- save_spectate_positions: If true, saves spectate positions to disk to prevent data loss on crashes.\n" +
+        "- freecam_distance_limit: Max distance (in blocks) you can move away from the spectated player while in freecam.";
     
     @SerializedName("admin_roles")
     private String adminRoles = "op";
@@ -27,6 +28,9 @@ public class ModConfig {
     
     @SerializedName("save_spectate_positions")
     private boolean saveSpectatePositions = true;
+
+    @SerializedName("freecam_distance_limit")
+    private double freecamDistanceLimit = 30.0;
     
     public String getConfigGuide() { return configGuide; }
     
@@ -38,10 +42,12 @@ public class ModConfig {
     public boolean isPreventCombatSpectate() { return preventCombatSpectate; }
     public double getCombatCheckRadius() { return combatCheckRadius; }
     public boolean isSaveSpectatePositions() { return saveSpectatePositions; }
+    public double getFreecamDistanceLimit() { return freecamDistanceLimit; }
     
     public void setAdminRoles(String adminRoles) { this.adminRoles = adminRoles; }
     public void setSpectateCooldown(int spectateCooldown) { this.spectateCooldown = spectateCooldown; }
     public void setPreventCombatSpectate(boolean preventCombatSpectate) { this.preventCombatSpectate = preventCombatSpectate; }
     public void setCombatCheckRadius(double combatCheckRadius) { this.combatCheckRadius = combatCheckRadius; }
     public void setSaveSpectatePositions(boolean saveSpectatePositions) { this.saveSpectatePositions = saveSpectatePositions; }
+    public void setFreecamDistanceLimit(double freecamDistanceLimit) { this.freecamDistanceLimit = freecamDistanceLimit; }
 }

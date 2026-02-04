@@ -3,6 +3,7 @@ package com.spectatemod;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +44,8 @@ public class SpectateMod implements ModInitializer {
             spectateManager.saveSpectateData();
             LOGGER.info("Spectate Mod shutting down");
         });
+
+        ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.enforceFreecamLimits(server));
     }
     
     public static SpectateManager getSpectateManager() {

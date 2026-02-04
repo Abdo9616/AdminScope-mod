@@ -45,6 +45,8 @@ public class SpectateManager {
 
     private final Map<UUID, SpectateState> activeSpectators = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> freecamWarnings = new ConcurrentHashMap<>();
+    private final Map<UUID, Vec3d> lastAllowedPositions = new ConcurrentHashMap<>();
 
     public boolean canSpectate(ServerPlayerEntity admin, ServerPlayerEntity target) {
         if (JailModCompat.isPlayerJailed(admin)) {
@@ -88,6 +90,7 @@ public class SpectateManager {
     public void startSpectating(ServerPlayerEntity admin, ServerPlayerEntity target) {
         SpectateState state = new SpectateState(admin, target);
         activeSpectators.put(admin.getUuid(), state);
+        lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
 
         admin.changeGameMode(GameMode.SPECTATOR);
         admin.setCameraEntity(target);
@@ -112,6 +115,7 @@ public class SpectateManager {
 
     public void stopSpectating(ServerPlayerEntity admin) {
         SpectateState state = activeSpectators.remove(admin.getUuid());
+        lastAllowedPositions.remove(admin.getUuid());
 
         if (state == null) {
             admin.sendMessage(Text.literal("§cYou are not currently spectating anyone!"), false);
@@ -161,6 +165,79 @@ public class SpectateManager {
         return activeSpectators.get(adminUuid);
     }
 
+    public void enforceFreecamLimits(MinecraftServer server) {
+        double limit = SpectateMod.getConfigManager().getConfig().getFreecamDistanceLimit();
+        if (limit <= 0) {
+            return;
+        }
+
+        double limitSq = limit * limit;
+        for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
+            ServerPlayerEntity admin = server.getPlayerManager().getPlayer(entry.getKey());
+            if (admin == null) {
+                continue;
+            }
+
+            SpectateState state = entry.getValue();
+            ServerPlayerEntity target = server.getPlayerManager().getPlayer(state.getTargetUuid());
+            if (target == null) {
+                continue;
+            }
+
+            if (admin.interactionManager.getGameMode() != GameMode.SPECTATOR) {
+                continue;
+            }
+
+            ServerWorld targetWorld = (ServerWorld) target.getEntityWorld();
+            if (!admin.getEntityWorld().getRegistryKey().equals(targetWorld.getRegistryKey())) {
+                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
+                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
+                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
+                warnFreecamLimit(admin, limit);
+                continue;
+            }
+
+            Vec3d adminPos = new Vec3d(admin.getX(), admin.getY(), admin.getZ());
+            double dx = adminPos.x - target.getX();
+            double dy = adminPos.y - target.getY();
+            double dz = adminPos.z - target.getZ();
+            double distSq = dx * dx + dy * dy + dz * dz;
+
+            if (distSq <= limitSq) {
+                lastAllowedPositions.put(admin.getUuid(), adminPos);
+                continue;
+            }
+
+            Vec3d lastAllowed = lastAllowedPositions.get(admin.getUuid());
+            if (lastAllowed == null) {
+                lastAllowed = adminPos;
+            }
+
+            double lax = lastAllowed.x - target.getX();
+            double lay = lastAllowed.y - target.getY();
+            double laz = lastAllowed.z - target.getZ();
+            double lastDistSq = lax * lax + lay * lay + laz * laz;
+            Vec3d safePos = lastAllowed;
+            if (lastDistSq > limitSq) {
+                double lastDist = Math.sqrt(lastDistSq);
+                if (lastDist > 1e-6) {
+                    double scale = limit / lastDist;
+                    safePos = new Vec3d(
+                            target.getX() + lax * scale,
+                            target.getY() + lay * scale,
+                            target.getZ() + laz * scale);
+                } else {
+                    safePos = new Vec3d(target.getX(), target.getY(), target.getZ());
+                }
+            }
+
+            admin.teleport(targetWorld, safePos.x, safePos.y, safePos.z,
+                    EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
+            lastAllowedPositions.put(admin.getUuid(), safePos);
+            warnFreecamLimit(admin, limit);
+        }
+    }
+
     private boolean isOnCooldown(UUID adminUuid) {
         Long cooldownExpiry = cooldowns.get(adminUuid);
         if (cooldownExpiry == null) {
@@ -197,6 +274,19 @@ public class SpectateManager {
             }
         }
         return false;
+    }
+
+    private void warnFreecamLimit(ServerPlayerEntity admin, double limit) {
+        long now = System.currentTimeMillis();
+        long nextAllowed = freecamWarnings.getOrDefault(admin.getUuid(), 0L);
+        if (now < nextAllowed) {
+            return;
+        }
+
+        freecamWarnings.put(admin.getUuid(), now + 1500);
+        int rounded = (int) Math.round(limit);
+        admin.sendMessage(Text.literal("§cYou cannot go further than " + rounded
+                + " blocks from the player you're spectating."), true);
     }
 
     public void saveSpectateData() {
