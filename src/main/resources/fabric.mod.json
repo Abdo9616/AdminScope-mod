@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "adminspectator",
+  "version": "${version}",
+  "name": "Admin Spectator",
+  "description": "A server-side moderation tool that allows admins to spectate players",
+  "authors": ["SpectateModTeam"],
+  "contact": {
+    "homepage": "https://github.com/yourusername/spectate-mod",
+    "sources": "https://github.com/yourusername/spectate-mod"
+  },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": ["com.spectatemod.SpectateMod"]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
