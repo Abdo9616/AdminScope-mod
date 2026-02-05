@@ -47,6 +47,9 @@ public class SpectateManager {
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> freecamWarnings = new ConcurrentHashMap<>();
     private final Map<UUID, Vec3d> lastAllowedPositions = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> freecamExceedCounts = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> freecamExceedWindows = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
 
     public boolean canSpectate(ServerPlayerEntity admin, ServerPlayerEntity target) {
         if (JailModCompat.isPlayerJailed(admin)) {
@@ -91,6 +94,8 @@ public class SpectateManager {
         SpectateState state = new SpectateState(admin, target);
         activeSpectators.put(admin.getUuid(), state);
         lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
+        freecamExceedCounts.remove(admin.getUuid());
+        freecamExceedWindows.remove(admin.getUuid());
 
         admin.changeGameMode(GameMode.SPECTATOR);
         admin.setCameraEntity(target);
@@ -114,8 +119,16 @@ public class SpectateManager {
     }
 
     public void stopSpectating(ServerPlayerEntity admin) {
+        stopSpectating(admin, null);
+    }
+
+    private void stopSpectating(ServerPlayerEntity admin, String reason) {
         SpectateState state = activeSpectators.remove(admin.getUuid());
         lastAllowedPositions.remove(admin.getUuid());
+        freecamExceedCounts.remove(admin.getUuid());
+        freecamExceedWindows.remove(admin.getUuid());
+        freecamWarnings.remove(admin.getUuid());
+        cameraWarnings.remove(admin.getUuid());
 
         if (state == null) {
             admin.sendMessage(Text.literal("§cYou are not currently spectating anyone!"), false);
@@ -149,9 +162,13 @@ public class SpectateManager {
         }
 
         long duration = state.getDurationSeconds();
-        admin.sendMessage(Text.literal(
-                "§aYou are no longer spectating. §7(Duration: " + duration + "s)"),
-                false);
+        if (reason != null && !reason.isBlank()) {
+            admin.sendMessage(Text.literal(reason), false);
+        } else {
+            admin.sendMessage(Text.literal(
+                    "§aYou are no longer spectating. §7(Duration: " + duration + "s)"),
+                    false);
+        }
 
         SpectateMod.LOGGER.info("{} stopped spectating after {}s",
                 admin.getName().getString(), duration);
@@ -163,6 +180,39 @@ public class SpectateManager {
 
     public SpectateState getSpectateState(UUID adminUuid) {
         return activeSpectators.get(adminUuid);
+    }
+
+    public void handlePlayerDisconnect(ServerPlayerEntity player, MinecraftServer server) {
+        UUID playerId = player.getUuid();
+        if (activeSpectators.remove(playerId) != null) {
+            lastAllowedPositions.remove(playerId);
+            freecamExceedCounts.remove(playerId);
+            freecamExceedWindows.remove(playerId);
+            freecamWarnings.remove(playerId);
+            cameraWarnings.remove(playerId);
+            return;
+        }
+
+        List<UUID> toStop = new ArrayList<>();
+        for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
+            if (entry.getValue().getTargetUuid().equals(playerId)) {
+                toStop.add(entry.getKey());
+            }
+        }
+
+        for (UUID adminId : toStop) {
+            ServerPlayerEntity admin = server.getPlayerManager().getPlayer(adminId);
+            if (admin != null) {
+                stopSpectating(admin, "§cSpectating ended: player left the server.");
+            } else {
+                activeSpectators.remove(adminId);
+                lastAllowedPositions.remove(adminId);
+                freecamExceedCounts.remove(adminId);
+                freecamExceedWindows.remove(adminId);
+                freecamWarnings.remove(adminId);
+                cameraWarnings.remove(adminId);
+            }
+        }
     }
 
     public void enforceFreecamLimits(MinecraftServer server) {
@@ -181,11 +231,17 @@ public class SpectateManager {
             SpectateState state = entry.getValue();
             ServerPlayerEntity target = server.getPlayerManager().getPlayer(state.getTargetUuid());
             if (target == null) {
+                stopSpectating(admin, "§cSpectating ended: player left the server.");
                 continue;
             }
 
             if (admin.interactionManager.getGameMode() != GameMode.SPECTATOR) {
                 continue;
+            }
+
+            if (admin.getCameraEntity() != target && admin.getCameraEntity() != admin) {
+                admin.setCameraEntity(target);
+                warnCameraLimit(admin);
             }
 
             ServerWorld targetWorld = (ServerWorld) target.getEntityWorld();
@@ -205,6 +261,30 @@ public class SpectateManager {
 
             if (distSq <= limitSq) {
                 lastAllowedPositions.put(admin.getUuid(), adminPos);
+                freecamExceedCounts.remove(admin.getUuid());
+                freecamExceedWindows.remove(admin.getUuid());
+                continue;
+            }
+
+            if (distSq > limitSq * 9) {
+                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
+                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
+                admin.setCameraEntity(target);
+                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
+                freecamExceedCounts.remove(admin.getUuid());
+                freecamExceedWindows.remove(admin.getUuid());
+                warnFreecamReset(admin);
+                continue;
+            }
+
+            if (registerExceedAttempt(admin)) {
+                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
+                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
+                admin.setCameraEntity(target);
+                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
+                freecamExceedCounts.remove(admin.getUuid());
+                freecamExceedWindows.remove(admin.getUuid());
+                warnFreecamReset(admin);
                 continue;
             }
 
@@ -287,6 +367,42 @@ public class SpectateManager {
         int rounded = (int) Math.round(limit);
         admin.sendMessage(Text.literal("§cYou cannot go further than " + rounded
                 + " blocks from the player you're spectating."), true);
+    }
+
+    private void warnFreecamReset(ServerPlayerEntity admin) {
+        long now = System.currentTimeMillis();
+        long nextAllowed = freecamWarnings.getOrDefault(admin.getUuid(), 0L);
+        if (now < nextAllowed) {
+            return;
+        }
+
+        freecamWarnings.put(admin.getUuid(), now + 1500);
+        admin.sendMessage(Text.literal("§cFreecam limit reached. Returning to player POV."), true);
+    }
+
+    private boolean registerExceedAttempt(ServerPlayerEntity admin) {
+        long now = System.currentTimeMillis();
+        long windowStart = freecamExceedWindows.getOrDefault(admin.getUuid(), 0L);
+        if (now - windowStart > 2000) {
+            freecamExceedWindows.put(admin.getUuid(), now);
+            freecamExceedCounts.put(admin.getUuid(), 1);
+            return false;
+        }
+
+        int count = freecamExceedCounts.getOrDefault(admin.getUuid(), 0) + 1;
+        freecamExceedCounts.put(admin.getUuid(), count);
+        return count >= 5;
+    }
+
+    private void warnCameraLimit(ServerPlayerEntity admin) {
+        long now = System.currentTimeMillis();
+        long nextAllowed = cameraWarnings.getOrDefault(admin.getUuid(), 0L);
+        if (now < nextAllowed) {
+            return;
+        }
+
+        cameraWarnings.put(admin.getUuid(), now + 1500);
+        admin.sendMessage(Text.literal("§cYou can only spectate the target player's POV."), true);
     }
 
     public void saveSpectateData() {

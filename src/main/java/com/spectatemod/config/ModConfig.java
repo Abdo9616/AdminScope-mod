@@ -18,7 +18,7 @@ public class ModConfig {
     private String adminRoles = "op";
     
     @SerializedName("spectate_cooldown")
-    private int spectateCooldown = 10;
+    private int spectateCooldown = 30;
     
     @SerializedName("prevent_combat_spectate")
     private boolean preventCombatSpectate = true;

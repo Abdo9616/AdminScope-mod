@@ -4,6 +4,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,6 +47,10 @@ public class SpectateMod implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.enforceFreecamLimits(server));
+
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            spectateManager.handlePlayerDisconnect(handler.getPlayer(), server);
+        });
     }
     
     public static SpectateManager getSpectateManager() {
