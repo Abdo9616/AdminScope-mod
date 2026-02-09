@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "id": "adminspectator",
+  "id": "adminscope",
   "version": "${version}",
-  "name": "Admin Spectator",
+  "name": "AdminScope",
   "description": "A server-side moderation tool that allows admins to spectate players",
-  "authors": ["SpectateModTeam"],
+  "authors": ["Abdo9616"],
   "contact": {
-    "homepage": "https://github.com/yourusername/spectate-mod",
-    "sources": "https://github.com/yourusername/spectate-mod"
+    "homepage": "https://github.com/Abdo9616/AdminScope-mod",
+    "sources": "https://github.com/Abdo9616/AdminScope-mod"
   },
   "license": "MIT",
   "environment": "server",
