@@ -1,9 +1,9 @@
 ## Readme
 
-Admin Spectator Mod (Fabric)
+AdminScope Mod (Fabric)
 ============================
 
-The **Admin Spectator Mod** is a server-side moderation tool that lets authorized staff spectate a player using the target player's POV, then instantly return to their exact position and gamemode. It is built for survival servers and avoids freecam abuse by enforcing a configurable distance limit.
+The **AdminScope Mod** is a server-side moderation tool that lets authorized staff spectate a player using the target player's POV, then instantly return to their exact position and gamemode. It is built for survival servers and avoids freecam abuse by enforcing a configurable distance limit.
 
 ----------------------------------------------------------------
 

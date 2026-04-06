@@ -50,7 +50,7 @@ public class SpectateCommand {
                     || removeSpectateNode(literals, "literals");
 
             if (removed) {
-                SpectateMod.LOGGER.info("Replaced vanilla /spectate command with Admin Spectator");
+                SpectateMod.LOGGER.info("Replaced vanilla /spectate command with AdminScope's implementation");
             }
         } catch (Exception e) {
             SpectateMod.LOGGER.warn("Could not remove vanilla /spectate command; conflicts may remain", e);
