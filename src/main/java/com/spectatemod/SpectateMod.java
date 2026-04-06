@@ -37,7 +37,7 @@ public class SpectateMod implements ModInitializer {
         
         // Register server lifecycle events
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            spectateManager.loadSpectateData();
+            spectateManager.loadSpectateData(server);
             LOGGER.info("Spectate Mod loaded successfully");
         });
         
@@ -49,7 +49,7 @@ public class SpectateMod implements ModInitializer {
         ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.enforceFreecamLimits(server));
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-            spectateManager.handlePlayerDisconnect(handler.getPlayer(), server);
+            spectateManager.handlePlayerDisconnect(handler.player, server);
         });
     }
     

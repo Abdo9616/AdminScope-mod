@@ -6,155 +6,187 @@ import com.google.gson.reflect.TypeToken;
 import com.spectatemod.SpectateMod;
 import com.spectatemod.data.SerializableSpectateState;
 import com.spectatemod.data.SpectateState;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.mob.HostileEntity;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.RegistryKeys;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
-import net.minecraft.network.packet.s2c.play.PositionFlag;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.GameMode;
-import net.minecraft.world.World;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Relative;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
-import java.util.EnumSet;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.lang.reflect.Method;
 
 public class SpectateManager {
     private static final String DATA_DIR = "config/spectatemod";
     private static final String DATA_FILE = "spectate_data.json";
+    private static final Component INTERNAL_ERROR_MESSAGE =
+            Component.literal("§cAn internal error occurred while executing the command.");
+
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     private final Map<UUID, SpectateState> activeSpectators = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> freecamWarnings = new ConcurrentHashMap<>();
-    private final Map<UUID, Vec3d> lastAllowedPositions = new ConcurrentHashMap<>();
+    private final Map<UUID, Vec3> lastAllowedPositions = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> freecamExceedCounts = new ConcurrentHashMap<>();
     private final Map<UUID, Long> freecamExceedWindows = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
 
-    public boolean canSpectate(ServerPlayerEntity admin, ServerPlayerEntity target) {
+    public boolean canSpectate(ServerPlayer admin, ServerPlayer target) {
+        if (admin == null || target == null) {
+            SpectateMod.LOGGER.warn("canSpectate called with null player(s): admin={}, target={}",
+                    admin == null, target == null);
+            return false;
+        }
+
         if (JailModCompat.isPlayerJailed(admin)) {
-            admin.sendMessage(Text.literal("§cYou cannot spectate while jailed."), false);
+            sendPlayerMessage(admin, Component.literal("§cYou cannot spectate while jailed."), false);
             return false;
         }
 
-        if (isSpectating(admin.getUuid())) {
-            admin.sendMessage(
-                    Text.literal("§cYou are already spectating someone! Use /spectate stop first."),
-                    false);
+        UUID adminUuid = admin.getUUID();
+        UUID targetUuid = target.getUUID();
+
+        if (isSpectating(adminUuid)) {
+            sendPlayerMessage(admin,
+                    Component.literal("§cYou are already spectating someone! Use /spectate stop first."), false);
             return false;
         }
 
-        if (admin.getUuid().equals(target.getUuid())) {
-            admin.sendMessage(Text.literal("§cYou cannot spectate yourself!"), false);
+        if (adminUuid.equals(targetUuid)) {
+            sendPlayerMessage(admin, Component.literal("§cYou cannot spectate yourself!"), false);
             return false;
         }
 
-        if (isOnCooldown(admin.getUuid())) {
-            long remainingSeconds = getCooldownRemaining(admin.getUuid());
-            admin.sendMessage(
-                    Text.literal("§cYou must wait " + remainingSeconds
-                            + " seconds before spectating again."),
-                    false);
+        if (isOnCooldown(adminUuid)) {
+            long remainingSeconds = getCooldownRemaining(adminUuid);
+            sendPlayerMessage(admin,
+                    Component.literal("§cYou must wait " + remainingSeconds
+                            + " seconds before spectating again."), false);
             return false;
         }
 
-        if (SpectateMod.getConfigManager().getConfig().isPreventCombatSpectate()) {
-            if (isInDanger(admin)) {
-                admin.sendMessage(Text.literal(
-                        "§cYou cannot spectate while in combat or near hostile mobs!"),
-                        false);
-                return false;
-            }
+        if (SpectateMod.getConfigManager().getConfig().isPreventCombatSpectate() && isInDanger(admin)) {
+            sendPlayerMessage(admin,
+                    Component.literal("§cYou cannot spectate while in combat or near hostile mobs!"), false);
+            return false;
         }
 
         return true;
     }
 
-    public void startSpectating(ServerPlayerEntity admin, ServerPlayerEntity target) {
+    public void startSpectating(ServerPlayer admin, ServerPlayer target) {
+        if (admin == null || target == null) {
+            SpectateMod.LOGGER.warn("startSpectating called with null player(s): admin={}, target={}",
+                    admin == null, target == null);
+            return;
+        }
+
         SpectateState state = new SpectateState(admin, target);
-        activeSpectators.put(admin.getUuid(), state);
-        lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
-        freecamExceedCounts.remove(admin.getUuid());
-        freecamExceedWindows.remove(admin.getUuid());
+        UUID adminUuid = admin.getUUID();
+        activeSpectators.put(adminUuid, state);
+        lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+        freecamExceedCounts.remove(adminUuid);
+        freecamExceedWindows.remove(adminUuid);
 
-        admin.changeGameMode(GameMode.SPECTATOR);
-        admin.setCameraEntity(target);
+        admin.setGameMode(GameType.SPECTATOR);
+        admin.setCamera(target);
 
-        if (!admin.getEntityWorld().getRegistryKey().equals(target.getEntityWorld().getRegistryKey())) {
-            ServerWorld targetWorld = (ServerWorld) target.getEntityWorld();
-            admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
-                    EnumSet.noneOf(PositionFlag.class), target.getYaw(), target.getPitch(), false);
+        if (!admin.level().dimension().equals(target.level().dimension())) {
+            ServerLevel targetWorld = (ServerLevel) target.level();
+            if (!teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                    target.getYRot(), target.getXRot(), false)) {
+                sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
+                SpectateMod.LOGGER.warn("Failed to move {} into target dimension while starting spectate",
+                        admin.getName().getString());
+            }
         }
 
         if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
             saveSpectateData();
         }
 
-        admin.sendMessage(Text.literal("§aYou are now spectating §e"
-                + target.getName().getString() + "§a."), false);
-        admin.sendMessage(Text.literal("§7Use §e/spectate stop §7to stop spectating."), false);
+        sendPlayerMessage(admin,
+                Component.literal("§aYou are now spectating §e" + target.getName().getString() + "§a."), false);
+        sendPlayerMessage(admin, Component.literal("§7Use §e/spectate stop §7to stop spectating."), false);
 
-        SpectateMod.LOGGER.info("{} started spectating {}", admin.getName().getString(),
-                target.getName().getString());
+        String adminName = admin.getName().getString();
+        String targetName = target.getName().getString();
+        SpectateMod.LOGGER.info("{} started spectating {}", adminName, targetName);
     }
 
-    public void stopSpectating(ServerPlayerEntity admin) {
+    public void stopSpectating(ServerPlayer admin) {
         stopSpectating(admin, null);
     }
 
-    private void stopSpectating(ServerPlayerEntity admin, String reason) {
-        SpectateState state = activeSpectators.remove(admin.getUuid());
-        lastAllowedPositions.remove(admin.getUuid());
-        freecamExceedCounts.remove(admin.getUuid());
-        freecamExceedWindows.remove(admin.getUuid());
-        freecamWarnings.remove(admin.getUuid());
-        cameraWarnings.remove(admin.getUuid());
-
-        if (state == null) {
-            admin.sendMessage(Text.literal("§cYou are not currently spectating anyone!"), false);
+    private void stopSpectating(ServerPlayer admin, String reason) {
+        if (admin == null) {
+            SpectateMod.LOGGER.warn("stopSpectating called with null admin");
             return;
         }
 
-        admin.setCameraEntity(admin);
+        UUID adminUuid = admin.getUUID();
+        SpectateState state = activeSpectators.remove(adminUuid);
+        lastAllowedPositions.remove(adminUuid);
+        freecamExceedCounts.remove(adminUuid);
+        freecamExceedWindows.remove(adminUuid);
+        freecamWarnings.remove(adminUuid);
+        cameraWarnings.remove(adminUuid);
 
-        ServerWorld adminWorld = (ServerWorld) admin.getEntityWorld();
-        MinecraftServer server = adminWorld.getServer();
+        if (state == null) {
+            sendPlayerMessage(admin, Component.literal("§cYou are not currently spectating anyone!"), false);
+            return;
+        }
+
+        admin.setCamera(admin);
+
+        MinecraftServer server = admin.level().getServer();
         if (server != null) {
-            ServerWorld originalWorld = server.getWorld(state.getDimension());
+            ServerLevel originalWorld = server.getLevel(state.getDimension());
 
             if (originalWorld != null) {
-                Vec3d pos = state.getPosition();
-                admin.teleport(originalWorld, pos.x, pos.y, pos.z,
-                        EnumSet.noneOf(PositionFlag.class), state.getYaw(), state.getPitch(), false);
+                Vec3 pos = state.getPosition();
+                if (!teleportPlayer(admin, originalWorld, pos.x, pos.y, pos.z,
+                        state.getYaw(), state.getPitch(), false)) {
+                    sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
+                    SpectateMod.LOGGER.warn("Failed to return {} to original location after spectate",
+                            admin.getName().getString());
+                }
+            } else {
+                SpectateMod.LOGGER.warn("Original world {} not found for player {} during stopSpectating",
+                        state.getDimensionId(), admin.getName().getString());
             }
         }
 
-        admin.changeGameMode(state.getGameMode());
+        admin.setGameMode(state.getGameMode());
 
         int cooldownSeconds = SpectateMod.getConfigManager().getConfig().getSpectateCooldown();
         if (cooldownSeconds > 0) {
-            cooldowns.put(admin.getUuid(), System.currentTimeMillis()
-                    + (cooldownSeconds * 1000L));
+            cooldowns.put(adminUuid, System.currentTimeMillis() + (cooldownSeconds * 1000L));
         }
 
         if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
@@ -163,15 +195,14 @@ public class SpectateManager {
 
         long duration = state.getDurationSeconds();
         if (reason != null && !reason.isBlank()) {
-            admin.sendMessage(Text.literal(reason), false);
+            sendPlayerMessage(admin, Component.literal(reason), false);
         } else {
-            admin.sendMessage(Text.literal(
-                    "§aYou are no longer spectating. §7(Duration: " + duration + "s)"),
-                    false);
+            sendPlayerMessage(admin,
+                    Component.literal("§aYou are no longer spectating. §7(Duration: " + duration + "s)"), false);
         }
 
-        SpectateMod.LOGGER.info("{} stopped spectating after {}s",
-                admin.getName().getString(), duration);
+        String adminName = admin.getName().getString();
+        SpectateMod.LOGGER.info("{} stopped spectating after {}s", adminName, duration);
     }
 
     public boolean isSpectating(UUID adminUuid) {
@@ -182,8 +213,12 @@ public class SpectateManager {
         return activeSpectators.get(adminUuid);
     }
 
-    public void handlePlayerDisconnect(ServerPlayerEntity player, MinecraftServer server) {
-        UUID playerId = player.getUuid();
+    public void handlePlayerDisconnect(ServerPlayer player, MinecraftServer server) {
+        if (player == null || server == null) {
+            return;
+        }
+
+        UUID playerId = player.getUUID();
         if (activeSpectators.remove(playerId) != null) {
             lastAllowedPositions.remove(playerId);
             freecamExceedCounts.remove(playerId);
@@ -201,7 +236,7 @@ public class SpectateManager {
         }
 
         for (UUID adminId : toStop) {
-            ServerPlayerEntity admin = server.getPlayerManager().getPlayer(adminId);
+            ServerPlayer admin = server.getPlayerList().getPlayer(adminId);
             if (admin != null) {
                 stopSpectating(admin, "§cSpectating ended: player left the server.");
             } else {
@@ -216,6 +251,10 @@ public class SpectateManager {
     }
 
     public void enforceFreecamLimits(MinecraftServer server) {
+        if (server == null) {
+            return;
+        }
+
         double limit = SpectateMod.getConfigManager().getConfig().getFreecamDistanceLimit();
         if (limit <= 0) {
             return;
@@ -223,72 +262,75 @@ public class SpectateManager {
 
         double limitSq = limit * limit;
         for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
-            ServerPlayerEntity admin = server.getPlayerManager().getPlayer(entry.getKey());
+            ServerPlayer admin = server.getPlayerList().getPlayer(entry.getKey());
             if (admin == null) {
                 continue;
             }
 
             SpectateState state = entry.getValue();
-            ServerPlayerEntity target = server.getPlayerManager().getPlayer(state.getTargetUuid());
+            ServerPlayer target = server.getPlayerList().getPlayer(state.getTargetUuid());
             if (target == null) {
                 stopSpectating(admin, "§cSpectating ended: player left the server.");
                 continue;
             }
 
-            if (admin.interactionManager.getGameMode() != GameMode.SPECTATOR) {
+            if (admin.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
                 continue;
             }
 
-            if (admin.getCameraEntity() != target && admin.getCameraEntity() != admin) {
-                admin.setCameraEntity(target);
+            if (admin.getCamera() != target && admin.getCamera() != admin) {
+                admin.setCamera(target);
                 warnCameraLimit(admin);
             }
 
-            ServerWorld targetWorld = (ServerWorld) target.getEntityWorld();
-            if (!admin.getEntityWorld().getRegistryKey().equals(targetWorld.getRegistryKey())) {
-                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
-                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
-                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
+            ServerLevel targetWorld = (ServerLevel) target.level();
+            if (!admin.level().dimension().equals(targetWorld.dimension())) {
+                if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                        admin.getYRot(), admin.getXRot(), false)) {
+                    lastAllowedPositions.put(admin.getUUID(), new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                }
                 warnFreecamLimit(admin, limit);
                 continue;
             }
 
-            Vec3d adminPos = new Vec3d(admin.getX(), admin.getY(), admin.getZ());
+            Vec3 adminPos = new Vec3(admin.getX(), admin.getY(), admin.getZ());
             double dx = adminPos.x - target.getX();
             double dy = adminPos.y - target.getY();
             double dz = adminPos.z - target.getZ();
             double distSq = dx * dx + dy * dy + dz * dz;
 
             if (distSq <= limitSq) {
-                lastAllowedPositions.put(admin.getUuid(), adminPos);
-                freecamExceedCounts.remove(admin.getUuid());
-                freecamExceedWindows.remove(admin.getUuid());
+                lastAllowedPositions.put(admin.getUUID(), adminPos);
+                freecamExceedCounts.remove(admin.getUUID());
+                freecamExceedWindows.remove(admin.getUUID());
                 continue;
             }
 
             if (distSq > limitSq * 9) {
-                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
-                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
-                admin.setCameraEntity(target);
-                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
-                freecamExceedCounts.remove(admin.getUuid());
-                freecamExceedWindows.remove(admin.getUuid());
+                if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                        admin.getYRot(), admin.getXRot(), false)) {
+                    admin.setCamera(target);
+                    lastAllowedPositions.put(admin.getUUID(), new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                    freecamExceedCounts.remove(admin.getUUID());
+                    freecamExceedWindows.remove(admin.getUUID());
+                }
                 warnFreecamReset(admin);
                 continue;
             }
 
             if (registerExceedAttempt(admin)) {
-                admin.teleport(targetWorld, target.getX(), target.getY(), target.getZ(),
-                        EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
-                admin.setCameraEntity(target);
-                lastAllowedPositions.put(admin.getUuid(), new Vec3d(admin.getX(), admin.getY(), admin.getZ()));
-                freecamExceedCounts.remove(admin.getUuid());
-                freecamExceedWindows.remove(admin.getUuid());
+                if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                        admin.getYRot(), admin.getXRot(), false)) {
+                    admin.setCamera(target);
+                    lastAllowedPositions.put(admin.getUUID(), new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                    freecamExceedCounts.remove(admin.getUUID());
+                    freecamExceedWindows.remove(admin.getUUID());
+                }
                 warnFreecamReset(admin);
                 continue;
             }
 
-            Vec3d lastAllowed = lastAllowedPositions.get(admin.getUuid());
+            Vec3 lastAllowed = lastAllowedPositions.get(admin.getUUID());
             if (lastAllowed == null) {
                 lastAllowed = adminPos;
             }
@@ -297,23 +339,24 @@ public class SpectateManager {
             double lay = lastAllowed.y - target.getY();
             double laz = lastAllowed.z - target.getZ();
             double lastDistSq = lax * lax + lay * lay + laz * laz;
-            Vec3d safePos = lastAllowed;
+            Vec3 safePos = lastAllowed;
             if (lastDistSq > limitSq) {
                 double lastDist = Math.sqrt(lastDistSq);
                 if (lastDist > 1e-6) {
                     double scale = limit / lastDist;
-                    safePos = new Vec3d(
+                    safePos = new Vec3(
                             target.getX() + lax * scale,
                             target.getY() + lay * scale,
                             target.getZ() + laz * scale);
                 } else {
-                    safePos = new Vec3d(target.getX(), target.getY(), target.getZ());
+                    safePos = new Vec3(target.getX(), target.getY(), target.getZ());
                 }
             }
 
-            admin.teleport(targetWorld, safePos.x, safePos.y, safePos.z,
-                    EnumSet.noneOf(PositionFlag.class), admin.getYaw(), admin.getPitch(), false);
-            lastAllowedPositions.put(admin.getUuid(), safePos);
+            if (teleportPlayer(admin, targetWorld, safePos.x, safePos.y, safePos.z,
+                    admin.getYRot(), admin.getXRot(), false)) {
+                lastAllowedPositions.put(admin.getUUID(), safePos);
+            }
             warnFreecamLimit(admin, limit);
         }
     }
@@ -339,70 +382,77 @@ public class SpectateManager {
         return Math.max(0, (cooldownExpiry - System.currentTimeMillis()) / 1000);
     }
 
-    private boolean isInDanger(ServerPlayerEntity player) {
-        if (player.getLastAttackTime() > player.age - 100) {
+    private boolean isInDanger(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+
+        // Keep the same 100-tick (~5s) recent-combat window used before migration.
+        // TODO(AS-207): Re-validate this signal if combat timestamps are remapped again.
+        if (player.getLastHurtByMobTimestamp() > player.tickCount - 100) {
             return true;
         }
 
         double radius = SpectateMod.getConfigManager().getConfig().getCombatCheckRadius();
-        Box searchBox = player.getBoundingBox().expand(radius);
-        List<Entity> nearbyEntities = player.getEntityWorld().getOtherEntities(player, searchBox);
+        AABB searchBox = player.getBoundingBox().inflate(radius);
+        List<Entity> nearbyEntities = player.level().getEntities(player, searchBox);
 
         for (Entity entity : nearbyEntities) {
-            if (entity instanceof HostileEntity) {
+            if (entity instanceof Monster) {
                 return true;
             }
         }
         return false;
     }
 
-    private void warnFreecamLimit(ServerPlayerEntity admin, double limit) {
+    private void warnFreecamLimit(ServerPlayer admin, double limit) {
         long now = System.currentTimeMillis();
-        long nextAllowed = freecamWarnings.getOrDefault(admin.getUuid(), 0L);
+        long nextAllowed = freecamWarnings.getOrDefault(admin.getUUID(), 0L);
         if (now < nextAllowed) {
             return;
         }
 
-        freecamWarnings.put(admin.getUuid(), now + 1500);
+        freecamWarnings.put(admin.getUUID(), now + 1500);
         int rounded = (int) Math.round(limit);
-        admin.sendMessage(Text.literal("§cYou cannot go further than " + rounded
-                + " blocks from the player you're spectating."), true);
+        sendPlayerMessage(admin,
+                Component.literal("§cYou cannot go further than " + rounded
+                        + " blocks from the player you're spectating."), true);
     }
 
-    private void warnFreecamReset(ServerPlayerEntity admin) {
+    private void warnFreecamReset(ServerPlayer admin) {
         long now = System.currentTimeMillis();
-        long nextAllowed = freecamWarnings.getOrDefault(admin.getUuid(), 0L);
+        long nextAllowed = freecamWarnings.getOrDefault(admin.getUUID(), 0L);
         if (now < nextAllowed) {
             return;
         }
 
-        freecamWarnings.put(admin.getUuid(), now + 1500);
-        admin.sendMessage(Text.literal("§cFreecam limit reached. Returning to player POV."), true);
+        freecamWarnings.put(admin.getUUID(), now + 1500);
+        sendPlayerMessage(admin, Component.literal("§cFreecam limit reached. Returning to player POV."), true);
     }
 
-    private boolean registerExceedAttempt(ServerPlayerEntity admin) {
+    private boolean registerExceedAttempt(ServerPlayer admin) {
         long now = System.currentTimeMillis();
-        long windowStart = freecamExceedWindows.getOrDefault(admin.getUuid(), 0L);
+        long windowStart = freecamExceedWindows.getOrDefault(admin.getUUID(), 0L);
         if (now - windowStart > 2000) {
-            freecamExceedWindows.put(admin.getUuid(), now);
-            freecamExceedCounts.put(admin.getUuid(), 1);
+            freecamExceedWindows.put(admin.getUUID(), now);
+            freecamExceedCounts.put(admin.getUUID(), 1);
             return false;
         }
 
-        int count = freecamExceedCounts.getOrDefault(admin.getUuid(), 0) + 1;
-        freecamExceedCounts.put(admin.getUuid(), count);
+        int count = freecamExceedCounts.getOrDefault(admin.getUUID(), 0) + 1;
+        freecamExceedCounts.put(admin.getUUID(), count);
         return count >= 5;
     }
 
-    private void warnCameraLimit(ServerPlayerEntity admin) {
+    private void warnCameraLimit(ServerPlayer admin) {
         long now = System.currentTimeMillis();
-        long nextAllowed = cameraWarnings.getOrDefault(admin.getUuid(), 0L);
+        long nextAllowed = cameraWarnings.getOrDefault(admin.getUUID(), 0L);
         if (now < nextAllowed) {
             return;
         }
 
-        cameraWarnings.put(admin.getUuid(), now + 1500);
-        admin.sendMessage(Text.literal("§cYou can only spectate the target player's POV."), true);
+        cameraWarnings.put(admin.getUUID(), now + 1500);
+        sendPlayerMessage(admin, Component.literal("§cYou can only spectate the target player's POV."), true);
     }
 
     public void saveSpectateData() {
@@ -414,6 +464,7 @@ public class SpectateManager {
 
             List<SerializableSpectateState> serializableStates = new ArrayList<>();
             for (SpectateState state : activeSpectators.values()) {
+                GameType gameType = state.getGameMode() == null ? GameType.SURVIVAL : state.getGameMode();
                 SerializableSpectateState serializable = new SerializableSpectateState(
                         state.getAdminUuid().toString(),
                         state.getTargetUuid().toString(),
@@ -422,8 +473,8 @@ public class SpectateManager {
                         state.getPosition().z,
                         state.getYaw(),
                         state.getPitch(),
-                        state.getGameMode().getId(),
-                        state.getDimension().getValue().toString(),
+                        gameType.name(),
+                        state.getDimensionId(),
                         state.getStartTime());
                 serializableStates.add(serializable);
             }
@@ -438,6 +489,10 @@ public class SpectateManager {
     }
 
     public void loadSpectateData() {
+        loadSpectateData(null);
+    }
+
+    public void loadSpectateData(MinecraftServer server) {
         File dataFile = new File(DATA_DIR, DATA_FILE);
         if (!dataFile.exists()) {
             return;
@@ -455,49 +510,195 @@ public class SpectateManager {
                 try {
                     UUID adminUuid = UUID.fromString(serializable.getAdminUuid());
                     UUID targetUuid = UUID.fromString(serializable.getTargetUuid());
-                    Vec3d position = new Vec3d(serializable.getPositionX(),
+                    Vec3 position = new Vec3(serializable.getPositionX(),
                             serializable.getPositionY(),
                             serializable.getPositionZ());
-                    float yaw = serializable.getYaw();
-                    float pitch = serializable.getPitch();
-                    GameMode gameMode = GameMode.byId(serializable.getGameMode(),
-                            GameMode.SURVIVAL);
-                    RegistryKey<World> dimension = RegistryKey.of(RegistryKeys.WORLD,
-                            Identifier.of(serializable.getDimension()));
+
+                    GameType gameMode = parseGameType(serializable.getGameMode());
+                    ResourceKey<Level> dimension = parseDimensionKey(serializable.getDimension(), server);
 
                     SpectateState state = new SpectateState(adminUuid, targetUuid, position,
-                            yaw, pitch, gameMode, dimension, serializable.getStartTime());
+                            serializable.getYaw(), serializable.getPitch(),
+                            gameMode, dimension, serializable.getStartTime());
                     activeSpectators.put(adminUuid, state);
                 } catch (Exception e) {
-                    SpectateMod.LOGGER.error("Failed to restore spectate state", e);
+                    SpectateMod.LOGGER.warn("Failed to restore a spectate state entry; skipping", e);
                 }
             }
 
-            SpectateMod.LOGGER.info("Loaded {} spectate session(s) from disk",
-                    activeSpectators.size());
+            SpectateMod.LOGGER.info("Loaded {} spectate session(s) from disk", activeSpectators.size());
         } catch (Exception e) {
             SpectateMod.LOGGER.error("Failed to load spectate data", e);
         }
     }
 
+    private GameType parseGameType(String serializedGameMode) {
+        if (serializedGameMode == null || serializedGameMode.isBlank()) {
+            SpectateMod.LOGGER.warn("Missing game mode in persisted spectate state, defaulting to SURVIVAL");
+            return GameType.SURVIVAL;
+        }
+
+        String normalized = serializedGameMode.trim();
+        try {
+            return GameType.valueOf(normalized.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+        }
+
+        try {
+            int gameTypeId = Integer.parseInt(normalized);
+            GameType byId = GameType.byId(gameTypeId);
+            if (byId != null) {
+                SpectateMod.LOGGER.warn("Loaded legacy numeric game mode id {} from persisted state", gameTypeId);
+                return byId;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+
+        SpectateMod.LOGGER.warn("Unknown game mode '{}' in persisted spectate state; defaulting to SURVIVAL",
+                serializedGameMode);
+        return GameType.SURVIVAL;
+    }
+
+    private ResourceKey<Level> parseDimensionKey(String serializedDimension, MinecraftServer server) {
+        if (serializedDimension != null) {
+            Identifier dimensionId = Identifier.tryParse(serializedDimension.trim());
+            if (dimensionId != null) {
+                return ResourceKey.create(Registries.DIMENSION, dimensionId);
+            }
+
+            // TODO(AS-208): Keep compatibility shim for older malformed saved dimension formats.
+            String sanitized = serializedDimension.trim();
+            if (sanitized.contains("[")) {
+                sanitized = sanitized.substring(sanitized.indexOf('[') + 1).replace("]", "");
+            }
+            if (sanitized.contains(" / ")) {
+                sanitized = sanitized.substring(sanitized.indexOf(" / ") + 3);
+            }
+            Identifier legacyId = Identifier.tryParse(sanitized);
+            if (legacyId != null) {
+                SpectateMod.LOGGER.warn("Recovered legacy dimension format '{}' as '{}'", serializedDimension,
+                        legacyId);
+                return ResourceKey.create(Registries.DIMENSION, legacyId);
+            }
+
+            SpectateMod.LOGGER.warn("Invalid dimension id '{}' in persisted spectate state", serializedDimension);
+        }
+
+        if (server != null) {
+            ServerLevel overworld = server.getLevel(Level.OVERWORLD);
+            if (overworld != null) {
+                return overworld.dimension();
+            }
+        }
+
+        return Level.OVERWORLD;
+    }
+
+    private boolean teleportPlayer(ServerPlayer player, ServerLevel world,
+            double x, double y, double z, float yaw, float pitch, boolean moveCamera) {
+        if (player == null || world == null) {
+            return false;
+        }
+
+        try {
+            return player.teleportTo(world, x, y, z, EnumSet.noneOf(Relative.class), yaw, pitch, moveCamera);
+        } catch (Throwable primaryFailure) {
+            SpectateMod.LOGGER.warn("Primary teleport API failed for {}", player.getName().getString(),
+                    primaryFailure);
+        }
+
+        // TODO(AS-209): Verify teleportTo signature stability once official mappings settle.
+        try {
+            for (Method method : player.getClass().getMethods()) {
+                if (!"teleportTo".equals(method.getName())) {
+                    continue;
+                }
+
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length != 8
+                        || !params[0].isAssignableFrom(world.getClass())
+                        || params[1] != double.class
+                        || params[2] != double.class
+                        || params[3] != double.class
+                        || !Set.class.isAssignableFrom(params[4])
+                        || params[5] != float.class
+                        || params[6] != float.class
+                        || params[7] != boolean.class) {
+                    continue;
+                }
+
+                Object result = method.invoke(player, world, x, y, z,
+                        EnumSet.noneOf(Relative.class), yaw, pitch, moveCamera);
+                if (result instanceof Boolean value) {
+                    return value;
+                }
+                return true;
+            }
+        } catch (Exception reflectiveFailure) {
+            SpectateMod.LOGGER.warn("Reflective teleport fallback failed for {}",
+                    player.getName().getString(), reflectiveFailure);
+        }
+
+        if (player.level() == world) {
+            try {
+                player.teleportTo(x, y, z);
+                return true;
+            } catch (Exception localTeleportFailure) {
+                SpectateMod.LOGGER.warn("Local teleport fallback failed for {}",
+                        player.getName().getString(), localTeleportFailure);
+            }
+        }
+
+        return false;
+    }
+
+    private void sendPlayerMessage(ServerPlayer player, Component message, boolean actionBar) {
+        if (player == null || message == null) {
+            return;
+        }
+
+        try {
+            player.sendSystemMessage(message, actionBar);
+            return;
+        } catch (Throwable ignored) {
+        }
+
+        // TODO(AS-210): Re-check message API variants when mappings are updated.
+        try {
+            Method method = player.getClass().getMethod("sendSystemMessage", Component.class);
+            method.invoke(player, message);
+            return;
+        } catch (Exception ignored) {
+        }
+
+        if (actionBar) {
+            try {
+                Method method = player.getClass().getMethod("sendOverlayMessage", Component.class);
+                method.invoke(player, message);
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+
+        SpectateMod.LOGGER.warn("Unable to deliver message to {}: {}",
+                player.getName().getString(), message.getString());
+    }
+
     private static final class JailModCompat {
+        private static final String JAIL_MOD_CLASS = "com.example.jailmod.JailMod";
+        private static final String LEGACY_PLAYER_CLASS = "net.minecraft.server.network.ServerPlayerEntity";
+
         private static boolean checked;
         private static Method isPlayerInJail;
 
-        private static boolean isPlayerJailed(ServerPlayerEntity player) {
-            if (!FabricLoader.getInstance().isModLoaded("jailmod")) {
+        private static boolean isPlayerJailed(ServerPlayer player) {
+            if (player == null || !FabricLoader.getInstance().isModLoaded("jailmod")) {
                 return false;
             }
 
             if (!checked) {
                 checked = true;
-                try {
-                    Class<?> jailModClass = Class.forName("com.example.jailmod.JailMod");
-                    isPlayerInJail = jailModClass.getMethod("isPlayerInJail", ServerPlayerEntity.class);
-                } catch (Exception e) {
-                    SpectateMod.LOGGER.warn("JailMod detected but compatibility hook failed", e);
-                    isPlayerInJail = null;
-                }
+                isPlayerInJail = resolveJailMethod();
             }
 
             if (isPlayerInJail == null) {
@@ -505,11 +706,57 @@ public class SpectateManager {
             }
 
             try {
+                Class<?> parameterType = isPlayerInJail.getParameterTypes()[0];
+                if (!parameterType.isInstance(player)) {
+                    SpectateMod.LOGGER.debug("JailMod hook expects {}, but player is {}",
+                            parameterType.getName(), player.getClass().getName());
+                    return false;
+                }
                 return (boolean) isPlayerInJail.invoke(null, player);
             } catch (Exception e) {
                 SpectateMod.LOGGER.warn("JailMod compatibility check failed", e);
                 return false;
             }
+        }
+
+        private static Method resolveJailMethod() {
+            try {
+                Class<?> jailModClass = Class.forName(JAIL_MOD_CLASS);
+
+                try {
+                    Method method = jailModClass.getMethod("isPlayerInJail", ServerPlayer.class);
+                    SpectateMod.LOGGER.info("JailMod compatibility enabled using ServerPlayer signature");
+                    return method;
+                } catch (NoSuchMethodException ignored) {
+                }
+
+                try {
+                    Class<?> legacyPlayerClass = Class.forName(LEGACY_PLAYER_CLASS);
+                    Method method = jailModClass.getMethod("isPlayerInJail", legacyPlayerClass);
+                    SpectateMod.LOGGER.info("JailMod compatibility enabled using legacy ServerPlayerEntity signature");
+                    return method;
+                } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+                }
+
+                for (Method method : jailModClass.getMethods()) {
+                    if (!"isPlayerInJail".equals(method.getName())
+                            || method.getParameterCount() != 1
+                            || method.getReturnType() != boolean.class) {
+                        continue;
+                    }
+
+                    if (method.getParameterTypes()[0].isAssignableFrom(ServerPlayer.class)) {
+                        SpectateMod.LOGGER.info("JailMod compatibility enabled using dynamic signature {}",
+                                method.getParameterTypes()[0].getName());
+                        return method;
+                    }
+                }
+
+                SpectateMod.LOGGER.warn("JailMod detected but no compatible isPlayerInJail signature found");
+            } catch (Exception e) {
+                SpectateMod.LOGGER.warn("JailMod detected but compatibility hook failed", e);
+            }
+            return null;
         }
     }
 }
