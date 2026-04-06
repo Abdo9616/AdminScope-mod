@@ -6,12 +6,16 @@ import com.google.gson.reflect.TypeToken;
 import com.spectatemod.SpectateMod;
 import com.spectatemod.data.SerializableSpectateState;
 import com.spectatemod.data.SpectateState;
+import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.AdvancementProgress;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.PlayerAdvancements;
+import net.minecraft.server.ServerAdvancementManager;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -33,6 +37,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -45,6 +50,7 @@ public class SpectateManager {
     private static final String DATA_FILE = "spectate_data.json";
     private static final Component INTERNAL_ERROR_MESSAGE =
             Component.literal("§cAn internal error occurred while executing the command.");
+    private static final int INITIAL_CAMERA_LOCK_TICKS = 10;
 
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
@@ -55,6 +61,8 @@ public class SpectateManager {
     private final Map<UUID, Integer> freecamExceedCounts = new ConcurrentHashMap<>();
     private final Map<UUID, Long> freecamExceedWindows = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> cameraLockTicks = new ConcurrentHashMap<>();
+    private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
 
     public boolean canSpectate(ServerPlayer admin, ServerPlayer target) {
         if (admin == null || target == null) {
@@ -108,13 +116,14 @@ public class SpectateManager {
 
         SpectateState state = new SpectateState(admin, target);
         UUID adminUuid = admin.getUUID();
+        advancementSnapshots.put(adminUuid, snapshotCompletedAdvancements(admin));
         activeSpectators.put(adminUuid, state);
         lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
         freecamExceedCounts.remove(adminUuid);
         freecamExceedWindows.remove(adminUuid);
+        cameraLockTicks.put(adminUuid, INITIAL_CAMERA_LOCK_TICKS);
 
         admin.setGameMode(GameType.SPECTATOR);
-        admin.setCamera(target);
 
         if (!admin.level().dimension().equals(target.level().dimension())) {
             ServerLevel targetWorld = (ServerLevel) target.level();
@@ -125,6 +134,9 @@ public class SpectateManager {
                         admin.getName().getString());
             }
         }
+
+        admin.setCamera(target);
+        rollbackSpectatorAdvancements(admin);
 
         if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
             saveSpectateData();
@@ -150,6 +162,9 @@ public class SpectateManager {
         }
 
         UUID adminUuid = admin.getUUID();
+        rollbackSpectatorAdvancements(admin);
+        advancementSnapshots.remove(adminUuid);
+        cameraLockTicks.remove(adminUuid);
         SpectateState state = activeSpectators.remove(adminUuid);
         lastAllowedPositions.remove(adminUuid);
         freecamExceedCounts.remove(adminUuid);
@@ -220,6 +235,8 @@ public class SpectateManager {
 
         UUID playerId = player.getUUID();
         if (activeSpectators.remove(playerId) != null) {
+            advancementSnapshots.remove(playerId);
+            cameraLockTicks.remove(playerId);
             lastAllowedPositions.remove(playerId);
             freecamExceedCounts.remove(playerId);
             freecamExceedWindows.remove(playerId);
@@ -241,6 +258,8 @@ public class SpectateManager {
                 stopSpectating(admin, "§cSpectating ended: player left the server.");
             } else {
                 activeSpectators.remove(adminId);
+                advancementSnapshots.remove(adminId);
+                cameraLockTicks.remove(adminId);
                 lastAllowedPositions.remove(adminId);
                 freecamExceedCounts.remove(adminId);
                 freecamExceedWindows.remove(adminId);
@@ -256,10 +275,7 @@ public class SpectateManager {
         }
 
         double limit = SpectateMod.getConfigManager().getConfig().getFreecamDistanceLimit();
-        if (limit <= 0) {
-            return;
-        }
-
+        boolean enforceDistanceLimit = limit > 0;
         double limitSq = limit * limit;
         for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
             ServerPlayer admin = server.getPlayerList().getPlayer(entry.getKey());
@@ -274,7 +290,38 @@ public class SpectateManager {
                 continue;
             }
 
+            UUID adminId = admin.getUUID();
             if (admin.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
+                cameraLockTicks.remove(adminId);
+                continue;
+            }
+
+            rollbackSpectatorAdvancements(admin);
+
+            Integer lockTicksRemaining = cameraLockTicks.get(adminId);
+            if (lockTicksRemaining != null && lockTicksRemaining > 0) {
+                ServerLevel targetWorld = (ServerLevel) target.level();
+                if (!admin.level().dimension().equals(targetWorld.dimension())) {
+                    if (!teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                            admin.getYRot(), admin.getXRot(), false)) {
+                        sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
+                        SpectateMod.LOGGER.warn("Failed to keep {} aligned with target dimension during camera lock",
+                                admin.getName().getString());
+                    }
+                }
+
+                admin.setCamera(target);
+                int nextTicks = lockTicksRemaining - 1;
+                if (nextTicks > 0) {
+                    cameraLockTicks.put(adminId, nextTicks);
+                } else {
+                    cameraLockTicks.remove(adminId);
+                }
+                lastAllowedPositions.put(adminId, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                continue;
+            }
+
+            if (!enforceDistanceLimit) {
                 continue;
             }
 
@@ -358,6 +405,112 @@ public class SpectateManager {
                 lastAllowedPositions.put(admin.getUUID(), safePos);
             }
             warnFreecamLimit(admin, limit);
+        }
+    }
+
+    private Set<Identifier> snapshotCompletedAdvancements(ServerPlayer player) {
+        Set<Identifier> completed = new HashSet<>();
+        if (player == null) {
+            return completed;
+        }
+
+        try {
+            MinecraftServer server = player.level().getServer();
+            if (server == null) {
+                return completed;
+            }
+
+            PlayerAdvancements playerAdvancements = player.getAdvancements();
+            ServerAdvancementManager advancementManager = server.getAdvancements();
+            if (playerAdvancements == null || advancementManager == null) {
+                return completed;
+            }
+
+            for (AdvancementHolder holder : advancementManager.getAllAdvancements()) {
+                if (holder == null) {
+                    continue;
+                }
+                AdvancementProgress progress = playerAdvancements.getOrStartProgress(holder);
+                if (progress != null && progress.isDone()) {
+                    completed.add(holder.id());
+                }
+            }
+        } catch (Exception e) {
+            SpectateMod.LOGGER.warn("Failed to snapshot advancement state for {}", player.getName().getString(), e);
+        }
+
+        return completed;
+    }
+
+    private void rollbackSpectatorAdvancements(ServerPlayer player) {
+        if (player == null) {
+            return;
+        }
+
+        UUID playerId = player.getUUID();
+        Set<Identifier> snapshot = advancementSnapshots.get(playerId);
+        if (snapshot == null) {
+            advancementSnapshots.put(playerId, snapshotCompletedAdvancements(player));
+            return;
+        }
+
+        try {
+            MinecraftServer server = player.level().getServer();
+            if (server == null) {
+                return;
+            }
+
+            PlayerAdvancements playerAdvancements = player.getAdvancements();
+            ServerAdvancementManager advancementManager = server.getAdvancements();
+            if (playerAdvancements == null || advancementManager == null) {
+                return;
+            }
+
+            int revokedCriteria = 0;
+            int revokedAdvancements = 0;
+            for (AdvancementHolder holder : advancementManager.getAllAdvancements()) {
+                if (holder == null || snapshot.contains(holder.id())) {
+                    continue;
+                }
+
+                AdvancementProgress progress = playerAdvancements.getOrStartProgress(holder);
+                if (progress == null || !progress.isDone()) {
+                    continue;
+                }
+
+                Set<String> completedCriteria = new HashSet<>();
+                for (String criterion : progress.getCompletedCriteria()) {
+                    completedCriteria.add(criterion);
+                }
+                if (completedCriteria.isEmpty()) {
+                    continue;
+                }
+
+                boolean revokedAny = false;
+                for (String criterion : completedCriteria) {
+                    try {
+                        if (playerAdvancements.revoke(holder, criterion)) {
+                            revokedAny = true;
+                            revokedCriteria++;
+                        }
+                    } catch (Exception criterionError) {
+                        SpectateMod.LOGGER.debug("Failed to revoke criterion '{}' for {}",
+                                criterion, player.getName().getString(), criterionError);
+                    }
+                }
+
+                if (revokedAny) {
+                    revokedAdvancements++;
+                }
+            }
+
+            if (revokedAdvancements > 0) {
+                SpectateMod.LOGGER.debug("Revoked {} advancement(s) ({} criterion/criteria) gained while spectating for {}",
+                        revokedAdvancements, revokedCriteria, player.getName().getString());
+            }
+        } catch (Exception e) {
+            SpectateMod.LOGGER.warn("Failed to rollback spectator advancements for {}",
+                    player.getName().getString(), e);
         }
     }
 
