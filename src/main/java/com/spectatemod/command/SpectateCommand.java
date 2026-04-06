@@ -4,34 +4,38 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.tree.CommandNode;
 import com.spectatemod.SpectateMod;
-import net.minecraft.command.argument.EntityArgumentType;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
+import com.spectatemod.manager.SpectateManager;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class SpectateCommand {
+    private static final Component INTERNAL_ERROR_MESSAGE =
+            Component.literal("§cAn internal error occurred while executing the command.");
 
-    public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
+    public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         removeVanillaSpectate(dispatcher);
-        dispatcher.register(CommandManager.literal("spectate")
-                .then(CommandManager.argument("player", EntityArgumentType.player())
-                        .requires(source -> hasPermission(source))
-                        .executes(SpectateCommand::spectatePlayer))
-                .then(CommandManager.literal("stop")
-                        .requires(source -> hasPermission(source))
-                        .executes(SpectateCommand::stopSpectating))
-                .then(CommandManager.literal("reload")
-                        .requires(source -> hasPermission(source))
-                        .executes(SpectateCommand::reloadConfig)));
+        dispatcher.register(Commands.literal("spectate")
+            .requires(SpectateCommand::hasPermission)
+            .then(Commands.argument("player", EntityArgument.player())
+                .executes(SpectateCommand::startSpectating))
+            .then(Commands.literal("stop")
+                .executes(SpectateCommand::stopSpectating))
+            .then(Commands.literal("reload")
+                .executes(SpectateCommand::reloadConfig)));
     }
 
-    @SuppressWarnings("unchecked")
-    private static void removeVanillaSpectate(CommandDispatcher<ServerCommandSource> dispatcher) {
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void removeVanillaSpectate(CommandDispatcher<CommandSourceStack> dispatcher) {
         try {
             var root = dispatcher.getRoot();
             Field childrenField = CommandNode.class.getDeclaredField("children");
@@ -39,18 +43,11 @@ public class SpectateCommand {
             childrenField.setAccessible(true);
             literalsField.setAccessible(true);
 
-            Map<String, CommandNode<ServerCommandSource>> children =
-                    (Map<String, CommandNode<ServerCommandSource>>) childrenField.get(root);
-            Map<String, CommandNode<ServerCommandSource>> literals =
-                    (Map<String, CommandNode<ServerCommandSource>>) literalsField.get(root);
+            Map children = (Map) childrenField.get(root);
+            Map literals = (Map) literalsField.get(root);
 
-            boolean removed = false;
-            if (children != null) {
-                removed = children.remove("spectate") != null || removed;
-            }
-            if (literals != null) {
-                removed = literals.remove("spectate") != null || removed;
-            }
+            boolean removed = removeSpectateNode(children, "children")
+                    || removeSpectateNode(literals, "literals");
 
             if (removed) {
                 SpectateMod.LOGGER.info("Replaced vanilla /spectate command with Admin Spectator");
@@ -60,28 +57,37 @@ public class SpectateCommand {
         }
     }
 
-    private static boolean hasPermission(ServerCommandSource source) {
-        if (!source.isExecutedByPlayer()) {
-            return true;
-        }
-
-        ServerPlayerEntity player = source.getPlayer();
-        if (player == null) {
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static boolean removeSpectateNode(Map nodeMap, String mapName) {
+        if (nodeMap == null) {
+            SpectateMod.LOGGER.debug("Command root {} map was null while removing /spectate", mapName);
             return false;
         }
 
-        // Stable OP check using the server's op list
-        String playerName = player.getName().getString();
-        for (String opName : source.getServer().getPlayerManager().getOpList().getNames()) {
-            if (opName.equalsIgnoreCase(playerName)) {
-                return true;
-            }
+        boolean removed = nodeMap.remove("spectate") != null;
+        if (removed) {
+            return true;
         }
 
-        List<String> adminRoles = SpectateMod.getConfigManager().getConfig().getAdminRoles();
-        for (String role : adminRoles) {
-            String trimmedRole = role.trim();
-            if (!trimmedRole.equalsIgnoreCase("op") && player.getCommandTags().contains(trimmedRole)) {
+        Iterator iterator = nodeMap.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Object entryObj = iterator.next();
+            if (!(entryObj instanceof Map.Entry<?, ?> entry)) {
+                SpectateMod.LOGGER.debug("Unexpected entry type in command {} map: {}", mapName,
+                        entryObj == null ? "null" : entryObj.getClass().getName());
+                continue;
+            }
+
+            Object keyObj = entry.getKey();
+            if (keyObj instanceof String key && "spectate".equalsIgnoreCase(key)) {
+                iterator.remove();
+                return true;
+            }
+
+            Object nodeObj = entry.getValue();
+            if (nodeObj instanceof CommandNode<?> commandNode
+                    && "spectate".equalsIgnoreCase(commandNode.getName())) {
+                iterator.remove();
                 return true;
             }
         }
@@ -89,69 +95,151 @@ public class SpectateCommand {
         return false;
     }
 
-    private static int spectatePlayer(CommandContext<ServerCommandSource> context) {
+    private static int startSpectating(CommandContext<CommandSourceStack> context) {
         try {
-            ServerCommandSource source = context.getSource();
-            ServerPlayerEntity admin = source.getPlayerOrThrow();
-            ServerPlayerEntity target = EntityArgumentType.getPlayer(context, "player");
-
-            if (!hasPermission(source)) {
-                admin.sendMessage(Text.literal("§cYou do not have permission to use this command!"), false);
+            if (!hasPermission(context.getSource())) {
+                context.getSource().sendFailure(Component.literal("§cYou do not have permission to use this command!"));
                 return 0;
             }
 
-            if (!SpectateMod.getSpectateManager().canSpectate(admin, target)) {
-                return 0;
+            ServerPlayer admin = context.getSource().getPlayerOrException();
+            ServerPlayer target = EntityArgument.getPlayer(context, "player");
+
+            SpectateManager manager = SpectateMod.getSpectateManager();
+            if (manager.canSpectate(admin, target)) {
+                manager.startSpectating(admin, target);
+                return 1;
             }
-
-            SpectateMod.getSpectateManager().startSpectating(admin, target);
-            return 1;
-
         } catch (Exception e) {
-            SpectateMod.LOGGER.error("Error in spectate command", e);
-            context.getSource().sendError(Text.literal("§cAn error occurred while executing the command."));
-            return 0;
+            SpectateMod.LOGGER.error("Command failed", e);
+            context.getSource().sendFailure(INTERNAL_ERROR_MESSAGE);
         }
+        return 0;
     }
 
-    private static int stopSpectating(CommandContext<ServerCommandSource> context) {
+    private static int stopSpectating(CommandContext<CommandSourceStack> context) {
         try {
-            ServerCommandSource source = context.getSource();
-            ServerPlayerEntity admin = source.getPlayerOrThrow();
-
-            if (!hasPermission(source)) {
-                admin.sendMessage(Text.literal("§cYou do not have permission to use this command!"), false);
+            if (!hasPermission(context.getSource())) {
+                context.getSource().sendFailure(Component.literal("§cYou do not have permission to use this command!"));
                 return 0;
             }
 
-            SpectateMod.getSpectateManager().stopSpectating(admin);
-            return 1;
+            ServerPlayer admin = context.getSource().getPlayerOrException();
+            SpectateManager manager = SpectateMod.getSpectateManager();
 
+            if (manager.isSpectating(admin.getUUID())) {
+                manager.stopSpectating(admin);
+                return 1;
+            } else {
+                context.getSource().sendFailure(Component.literal("§cYou are not spectating anyone!"));
+            }
         } catch (Exception e) {
-            SpectateMod.LOGGER.error("Error in spectate stop command", e);
-            context.getSource().sendError(Text.literal("§cAn error occurred while executing the command."));
-            return 0;
+            SpectateMod.LOGGER.error("Command failed", e);
+            context.getSource().sendFailure(INTERNAL_ERROR_MESSAGE);
         }
+        return 0;
     }
 
-    private static int reloadConfig(CommandContext<ServerCommandSource> context) {
-        try {
-            ServerCommandSource source = context.getSource();
-
-            if (!hasPermission(source)) {
-                source.sendError(Text.literal("§cYou do not have permission to use this command!"));
-                return 0;
-            }
-
-            SpectateMod.getConfigManager().reloadConfig();
-            source.sendFeedback(() -> Text.literal("§aSpectate Mod configuration reloaded successfully!"), true);
-
-            return 1;
-
-        } catch (Exception e) {
-            SpectateMod.LOGGER.error("Error in spectate reload command", e);
-            context.getSource().sendError(Text.literal("§cAn error occurred while reloading the configuration."));
+    private static int reloadConfig(CommandContext<CommandSourceStack> context) {
+        if (!hasPermission(context.getSource())) {
+            context.getSource().sendFailure(Component.literal("§cYou do not have permission to use this command!"));
             return 0;
         }
+
+        SpectateMod.getConfigManager().reloadConfig();
+        context.getSource().sendSuccess(
+                () -> Component.literal("§aSpectate Mod configuration reloaded successfully!"), true);
+        return 1;
+    }
+
+    private static boolean hasPermission(CommandSourceStack source) {
+        if (!source.isPlayer()) {
+            return true;
+        }
+
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            return false;
+        }
+
+        if (isOperator(source, player)) {
+            return true;
+        }
+
+        List<String> adminRoles = SpectateMod.getConfigManager().getConfig().getAdminRoles();
+        Set<String> tags = player.entityTags();
+        for (String role : adminRoles) {
+            String trimmedRole = role.trim();
+            if (trimmedRole.isEmpty()) {
+                continue;
+            }
+
+            if (trimmedRole.equalsIgnoreCase("op")) {
+                if (isOperator(source, player)) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (hasMatchingTag(tags, trimmedRole)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean isOperator(CommandSourceStack source, ServerPlayer player) {
+        try {
+            var server = source.getServer();
+            if (server == null || server.getPlayerList() == null) {
+                return false;
+            }
+
+            Object playerList = server.getPlayerList();
+
+            // Prefer stable API call for this mapping.
+            try {
+                return (boolean) playerList.getClass()
+                        .getMethod("isOp", player.nameAndId().getClass())
+                        .invoke(playerList, player.nameAndId());
+            } catch (NoSuchMethodException ignored) {
+                // TODO(AS-206): Revisit direct API call once mapping signatures are finalized.
+            }
+
+            // Fallback across mapping variants.
+            Object[] candidates = {
+                player.nameAndId(),
+                player.getGameProfile(),
+                player.getUUID()
+            };
+
+            for (Method method : playerList.getClass().getMethods()) {
+                if (!"isOp".equals(method.getName())
+                        || method.getParameterCount() != 1
+                        || method.getReturnType() != boolean.class) {
+                    continue;
+                }
+
+                Class<?> parameterType = method.getParameterTypes()[0];
+                for (Object candidate : candidates) {
+                    if (candidate != null && parameterType.isAssignableFrom(candidate.getClass())) {
+                        return (boolean) method.invoke(playerList, candidate);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            SpectateMod.LOGGER.debug("Unable to resolve OP status for {}", player.getName().getString(), e);
+        }
+        return false;
+    }
+
+    private static boolean hasMatchingTag(Set<String> playerTags, String roleTag) {
+        for (String tag : playerTags) {
+            if (tag.equalsIgnoreCase(roleTag)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
