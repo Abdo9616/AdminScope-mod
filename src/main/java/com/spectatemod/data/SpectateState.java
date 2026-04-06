@@ -1,36 +1,36 @@
 package com.spectatemod.data;
 
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.GameMode;
-import net.minecraft.world.World;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 
 import java.util.UUID;
 
 public class SpectateState {
     private final UUID adminUuid;
     private final UUID targetUuid;
-    private final Vec3d position;
+    private final Vec3 position;
     private final float yaw;
     private final float pitch;
-    private final GameMode gameMode;
-    private final RegistryKey<World> dimension;
+    private final GameType gameMode;
+    private final ResourceKey<Level> dimension;
     private final long startTime;
 
-    public SpectateState(ServerPlayerEntity admin, ServerPlayerEntity target) {
-        this.adminUuid = admin.getUuid();
-        this.targetUuid = target.getUuid();
-        this.position = new Vec3d(admin.getX(), admin.getY(), admin.getZ());
-        this.yaw = admin.getYaw();
-        this.pitch = admin.getPitch();
-        this.gameMode = admin.interactionManager.getGameMode();
-        this.dimension = admin.getEntityWorld().getRegistryKey();
+    public SpectateState(ServerPlayer admin, ServerPlayer target) {
+        this.adminUuid = admin.getUUID();
+        this.targetUuid = target.getUUID();
+        this.position = new Vec3(admin.getX(), admin.getY(), admin.getZ());
+        this.yaw = admin.getYRot();
+        this.pitch = admin.getXRot();
+        this.gameMode = admin.gameMode.getGameModeForPlayer();
+        this.dimension = admin.level().dimension();
         this.startTime = System.currentTimeMillis();
     }
 
-    public SpectateState(UUID adminUuid, UUID targetUuid, Vec3d position,
-            float yaw, float pitch, GameMode gameMode, RegistryKey<World> dimension, long startTime) {
+    public SpectateState(UUID adminUuid, UUID targetUuid, Vec3 position,
+            float yaw, float pitch, GameType gameMode, ResourceKey<Level> dimension, long startTime) {
         this.adminUuid = adminUuid;
         this.targetUuid = targetUuid;
         this.position = position;
@@ -49,7 +49,7 @@ public class SpectateState {
         return targetUuid;
     }
 
-    public Vec3d getPosition() {
+    public Vec3 getPosition() {
         return position;
     }
 
@@ -61,12 +61,19 @@ public class SpectateState {
         return pitch;
     }
 
-    public GameMode getGameMode() {
+    public GameType getGameMode() {
         return gameMode;
     }
 
-    public RegistryKey<World> getDimension() {
+    public ResourceKey<Level> getDimension() {
         return dimension;
+    }
+
+    public String getDimensionId() {
+        if (dimension == null) {
+            return "minecraft:overworld";
+        }
+        return dimension.identifier().toString();
     }
 
     public long getStartTime() {
