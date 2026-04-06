@@ -51,7 +51,7 @@ public class SpectateManager {
     private static final Component INTERNAL_ERROR_MESSAGE =
             Component.literal("§cAn internal error occurred while executing the command.");
     private static final int INITIAL_CAMERA_LOCK_TICKS = 10;
-    private static final long REJOIN_CANCEL_DELAY_MILLIS = 3000L;
+    private static final long REJOIN_CANCEL_DELAY_MILLIS = 5000L;
 
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
@@ -83,6 +83,12 @@ public class SpectateManager {
 
         UUID adminUuid = admin.getUUID();
         UUID targetUuid = target.getUUID();
+
+        if (pendingReconnectRestores.containsKey(adminUuid)) {
+            sendPlayerMessage(admin,
+                    Component.literal("§eReconnect cleanup in progress. Please wait a few seconds."), false);
+            return false;
+        }
 
         if (isSpectating(adminUuid)) {
             sendPlayerMessage(admin,
@@ -255,7 +261,6 @@ public class SpectateManager {
             freecamWarnings.remove(playerId);
             cameraWarnings.remove(playerId);
 
-            ensureSpectateCooldown(playerId);
             queueReconnectCleanup(playerId, disconnectedState,
                     resolveBestTargetName(playerId, server, disconnectedState.getTargetUuid()));
             saveSpectateData();
@@ -326,7 +331,6 @@ public class SpectateManager {
                 freecamExceedWindows.remove(playerId);
                 freecamWarnings.remove(playerId);
                 cameraWarnings.remove(playerId);
-                ensureSpectateCooldown(playerId);
                 targetName = resolveBestTargetName(playerId, server, restoreState.getTargetUuid());
                 queueReconnectCleanup(playerId, restoreState, targetName);
                 saveSpectateData();
@@ -343,7 +347,6 @@ public class SpectateManager {
             targetNameByAdmin.put(playerId, targetName);
         }
 
-        ensureSpectateCooldown(playerId);
         long cleanupAt = System.currentTimeMillis() + REJOIN_CANCEL_DELAY_MILLIS;
         pendingReconnectCancelAt.put(playerId, cleanupAt);
 
@@ -741,6 +744,7 @@ public class SpectateManager {
 
         GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
         player.setGameMode(restoreMode);
+        ensureSpectateCooldown(playerId);
 
         String targetLabel = (targetName == null || targetName.isBlank())
                 ? resolveBestTargetName(playerId, server, restoreState.getTargetUuid())
