@@ -63,6 +63,8 @@ public class SpectateManager {
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> cameraLockTicks = new ConcurrentHashMap<>();
     private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
+    private final Map<UUID, SpectateState> pendingReconnectRestores = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingReconnectTargets = new ConcurrentHashMap<>();
 
     public boolean canSpectate(ServerPlayer admin, ServerPlayer target) {
         if (admin == null || target == null) {
@@ -199,10 +201,7 @@ public class SpectateManager {
 
         admin.setGameMode(state.getGameMode());
 
-        int cooldownSeconds = SpectateMod.getConfigManager().getConfig().getSpectateCooldown();
-        if (cooldownSeconds > 0) {
-            cooldowns.put(adminUuid, System.currentTimeMillis() + (cooldownSeconds * 1000L));
-        }
+        applySpectateCooldown(adminUuid);
 
         if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
             saveSpectateData();
@@ -234,7 +233,9 @@ public class SpectateManager {
         }
 
         UUID playerId = player.getUUID();
-        if (activeSpectators.remove(playerId) != null) {
+        SpectateState disconnectedState = activeSpectators.remove(playerId);
+        if (disconnectedState != null) {
+            rollbackSpectatorAdvancements(player);
             advancementSnapshots.remove(playerId);
             cameraLockTicks.remove(playerId);
             lastAllowedPositions.remove(playerId);
@@ -242,6 +243,19 @@ public class SpectateManager {
             freecamExceedWindows.remove(playerId);
             freecamWarnings.remove(playerId);
             cameraWarnings.remove(playerId);
+
+            applySpectateCooldown(playerId);
+            pendingReconnectRestores.put(playerId, disconnectedState);
+            pendingReconnectTargets.put(playerId, resolveTargetName(server, disconnectedState.getTargetUuid()));
+
+            if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
+                saveSpectateData();
+            }
+
+            String adminName = player.getName().getString();
+            String targetName = pendingReconnectTargets.getOrDefault(playerId, "unknown player");
+            SpectateMod.LOGGER.info("{} disconnected while spectating {}; session was ended automatically",
+                    adminName, targetName);
             return;
         }
 
@@ -267,6 +281,69 @@ public class SpectateManager {
                 cameraWarnings.remove(adminId);
             }
         }
+    }
+
+    public void handlePlayerJoin(ServerPlayer player, MinecraftServer server) {
+        if (player == null || server == null) {
+            return;
+        }
+
+        UUID playerId = player.getUUID();
+        SpectateState restoreState = pendingReconnectRestores.remove(playerId);
+        String targetName = pendingReconnectTargets.remove(playerId);
+
+        if (restoreState == null) {
+            // Safety fallback for stale persisted states loaded from disk.
+            restoreState = activeSpectators.remove(playerId);
+            if (restoreState != null) {
+                rollbackSpectatorAdvancements(player);
+                advancementSnapshots.remove(playerId);
+                cameraLockTicks.remove(playerId);
+                lastAllowedPositions.remove(playerId);
+                freecamExceedCounts.remove(playerId);
+                freecamExceedWindows.remove(playerId);
+                freecamWarnings.remove(playerId);
+                cameraWarnings.remove(playerId);
+                applySpectateCooldown(playerId);
+                targetName = resolveTargetName(server, restoreState.getTargetUuid());
+                if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
+                    saveSpectateData();
+                }
+            }
+        }
+
+        if (restoreState == null) {
+            return;
+        }
+
+        player.setCamera(player);
+
+        ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
+        if (originalWorld == null) {
+            originalWorld = server.getLevel(Level.OVERWORLD);
+        }
+
+        if (originalWorld != null) {
+            Vec3 pos = restoreState.getPosition();
+            if (!teleportPlayer(player, originalWorld, pos.x, pos.y, pos.z,
+                    restoreState.getYaw(), restoreState.getPitch(), false)) {
+                SpectateMod.LOGGER.warn("Failed to restore {} to saved position after reconnect",
+                        player.getName().getString());
+            }
+        }
+
+        GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
+        player.setGameMode(restoreMode);
+
+        String targetLabel = (targetName == null || targetName.isBlank())
+                ? resolveTargetName(server, restoreState.getTargetUuid())
+                : targetName;
+
+        sendPlayerMessage(player, Component.literal("§eYour spectate session ended when you disconnected."), false);
+        sendPlayerMessage(player,
+                Component.literal("§7You were spectating §e" + targetLabel
+                        + "§7. Use §e/spectate <player> §7if you want to spectate again."),
+                false);
     }
 
     public void enforceFreecamLimits(MinecraftServer server) {
@@ -527,12 +604,38 @@ public class SpectateManager {
         return true;
     }
 
+    private void applySpectateCooldown(UUID adminUuid) {
+        if (adminUuid == null) {
+            return;
+        }
+
+        int cooldownSeconds = SpectateMod.getConfigManager().getConfig().getSpectateCooldown();
+        if (cooldownSeconds > 0) {
+            cooldowns.put(adminUuid, System.currentTimeMillis() + (cooldownSeconds * 1000L));
+        } else {
+            cooldowns.remove(adminUuid);
+        }
+    }
+
     private long getCooldownRemaining(UUID adminUuid) {
         Long cooldownExpiry = cooldowns.get(adminUuid);
         if (cooldownExpiry == null) {
             return 0;
         }
         return Math.max(0, (cooldownExpiry - System.currentTimeMillis()) / 1000);
+    }
+
+    private String resolveTargetName(MinecraftServer server, UUID targetUuid) {
+        if (targetUuid == null || server == null) {
+            return "unknown player";
+        }
+
+        ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
+        if (targetPlayer != null) {
+            return targetPlayer.getName().getString();
+        }
+
+        return targetUuid.toString();
     }
 
     private boolean isInDanger(ServerPlayer player) {

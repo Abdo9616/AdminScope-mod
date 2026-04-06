@@ -51,6 +51,10 @@ public class SpectateMod implements ModInitializer {
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             spectateManager.handlePlayerDisconnect(handler.player, server);
         });
+
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            spectateManager.handlePlayerJoin(handler.player, server);
+        });
     }
     
     public static SpectateManager getSpectateManager() {
