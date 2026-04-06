@@ -7,6 +7,8 @@ public class SerializableSpectateState {
     private String adminUuid;
     @SerializedName("target_uuid")
     private String targetUuid;
+    @SerializedName("target_name")
+    private String targetName;
     @SerializedName("position_x")
     private double positionX;
     @SerializedName("position_y")
@@ -27,12 +29,13 @@ public class SerializableSpectateState {
     public SerializableSpectateState() {
     }
 
-    public SerializableSpectateState(String adminUuid, String targetUuid,
+    public SerializableSpectateState(String adminUuid, String targetUuid, String targetName,
             double positionX, double positionY, double positionZ,
             float yaw, float pitch,
             String gameMode, String dimension, long startTime) {
         this.adminUuid = adminUuid;
         this.targetUuid = targetUuid;
+        this.targetName = targetName;
         this.positionX = positionX;
         this.positionY = positionY;
         this.positionZ = positionZ;
@@ -49,6 +52,10 @@ public class SerializableSpectateState {
 
     public String getTargetUuid() {
         return targetUuid;
+    }
+
+    public String getTargetName() {
+        return targetName;
     }
 
     public double getPositionX() {

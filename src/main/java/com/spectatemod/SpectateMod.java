@@ -46,7 +46,10 @@ public class SpectateMod implements ModInitializer {
             LOGGER.info("Spectate Mod shutting down");
         });
 
-        ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.enforceFreecamLimits(server));
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            spectateManager.processPendingReconnectCleanup(server);
+            spectateManager.enforceFreecamLimits(server);
+        });
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             spectateManager.handlePlayerDisconnect(handler.player, server);

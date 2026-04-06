@@ -51,6 +51,7 @@ public class SpectateManager {
     private static final Component INTERNAL_ERROR_MESSAGE =
             Component.literal("§cAn internal error occurred while executing the command.");
     private static final int INITIAL_CAMERA_LOCK_TICKS = 10;
+    private static final long REJOIN_CANCEL_DELAY_MILLIS = 3000L;
 
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
@@ -65,6 +66,8 @@ public class SpectateManager {
     private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
     private final Map<UUID, SpectateState> pendingReconnectRestores = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingReconnectTargets = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> pendingReconnectCancelAt = new ConcurrentHashMap<>();
+    private final Map<UUID, String> targetNameByAdmin = new ConcurrentHashMap<>();
 
     public boolean canSpectate(ServerPlayer admin, ServerPlayer target) {
         if (admin == null || target == null) {
@@ -120,6 +123,10 @@ public class SpectateManager {
         UUID adminUuid = admin.getUUID();
         advancementSnapshots.put(adminUuid, snapshotCompletedAdvancements(admin));
         activeSpectators.put(adminUuid, state);
+        targetNameByAdmin.put(adminUuid, target.getName().getString());
+        pendingReconnectRestores.remove(adminUuid);
+        pendingReconnectTargets.remove(adminUuid);
+        pendingReconnectCancelAt.remove(adminUuid);
         lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
         freecamExceedCounts.remove(adminUuid);
         freecamExceedWindows.remove(adminUuid);
@@ -167,6 +174,10 @@ public class SpectateManager {
         rollbackSpectatorAdvancements(admin);
         advancementSnapshots.remove(adminUuid);
         cameraLockTicks.remove(adminUuid);
+        targetNameByAdmin.remove(adminUuid);
+        pendingReconnectRestores.remove(adminUuid);
+        pendingReconnectTargets.remove(adminUuid);
+        pendingReconnectCancelAt.remove(adminUuid);
         SpectateState state = activeSpectators.remove(adminUuid);
         lastAllowedPositions.remove(adminUuid);
         freecamExceedCounts.remove(adminUuid);
@@ -244,18 +255,21 @@ public class SpectateManager {
             freecamWarnings.remove(playerId);
             cameraWarnings.remove(playerId);
 
-            applySpectateCooldown(playerId);
-            pendingReconnectRestores.put(playerId, disconnectedState);
-            pendingReconnectTargets.put(playerId, resolveTargetName(server, disconnectedState.getTargetUuid()));
-
-            if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
-                saveSpectateData();
-            }
+            ensureSpectateCooldown(playerId);
+            queueReconnectCleanup(playerId, disconnectedState,
+                    resolveBestTargetName(playerId, server, disconnectedState.getTargetUuid()));
+            saveSpectateData();
 
             String adminName = player.getName().getString();
             String targetName = pendingReconnectTargets.getOrDefault(playerId, "unknown player");
             SpectateMod.LOGGER.info("{} disconnected while spectating {}; session was ended automatically",
                     adminName, targetName);
+            return;
+        }
+
+        if (pendingReconnectRestores.containsKey(playerId)) {
+            pendingReconnectCancelAt.remove(playerId);
+            saveSpectateData();
             return;
         }
 
@@ -274,12 +288,20 @@ public class SpectateManager {
                 activeSpectators.remove(adminId);
                 advancementSnapshots.remove(adminId);
                 cameraLockTicks.remove(adminId);
+                targetNameByAdmin.remove(adminId);
+                pendingReconnectRestores.remove(adminId);
+                pendingReconnectTargets.remove(adminId);
+                pendingReconnectCancelAt.remove(adminId);
                 lastAllowedPositions.remove(adminId);
                 freecamExceedCounts.remove(adminId);
                 freecamExceedWindows.remove(adminId);
                 freecamWarnings.remove(adminId);
                 cameraWarnings.remove(adminId);
             }
+        }
+
+        if (!toStop.isEmpty()) {
+            saveSpectateData();
         }
     }
 
@@ -289,8 +311,8 @@ public class SpectateManager {
         }
 
         UUID playerId = player.getUUID();
-        SpectateState restoreState = pendingReconnectRestores.remove(playerId);
-        String targetName = pendingReconnectTargets.remove(playerId);
+        SpectateState restoreState = pendingReconnectRestores.get(playerId);
+        String targetName = pendingReconnectTargets.get(playerId);
 
         if (restoreState == null) {
             // Safety fallback for stale persisted states loaded from disk.
@@ -304,11 +326,10 @@ public class SpectateManager {
                 freecamExceedWindows.remove(playerId);
                 freecamWarnings.remove(playerId);
                 cameraWarnings.remove(playerId);
-                applySpectateCooldown(playerId);
-                targetName = resolveTargetName(server, restoreState.getTargetUuid());
-                if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
-                    saveSpectateData();
-                }
+                ensureSpectateCooldown(playerId);
+                targetName = resolveBestTargetName(playerId, server, restoreState.getTargetUuid());
+                queueReconnectCleanup(playerId, restoreState, targetName);
+                saveSpectateData();
             }
         }
 
@@ -316,34 +337,47 @@ public class SpectateManager {
             return;
         }
 
-        player.setCamera(player);
-
-        ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
-        if (originalWorld == null) {
-            originalWorld = server.getLevel(Level.OVERWORLD);
+        if (targetName == null || targetName.isBlank()) {
+            targetName = resolveBestTargetName(playerId, server, restoreState.getTargetUuid());
+            pendingReconnectTargets.put(playerId, targetName);
+            targetNameByAdmin.put(playerId, targetName);
         }
 
-        if (originalWorld != null) {
-            Vec3 pos = restoreState.getPosition();
-            if (!teleportPlayer(player, originalWorld, pos.x, pos.y, pos.z,
-                    restoreState.getYaw(), restoreState.getPitch(), false)) {
-                SpectateMod.LOGGER.warn("Failed to restore {} to saved position after reconnect",
-                        player.getName().getString());
+        ensureSpectateCooldown(playerId);
+        long cleanupAt = System.currentTimeMillis() + REJOIN_CANCEL_DELAY_MILLIS;
+        pendingReconnectCancelAt.put(playerId, cleanupAt);
+
+        long delaySeconds = Math.max(1L, (REJOIN_CANCEL_DELAY_MILLIS + 999L) / 1000L);
+        sendPlayerMessage(player, Component.literal("§eReconnect detected while spectating."), false);
+        sendPlayerMessage(player,
+                Component.literal("§7For safety, your spectate session will end in §e" + delaySeconds
+                        + "s§7. Please wait..."),
+                false);
+    }
+
+    public void processPendingReconnectCleanup(MinecraftServer server) {
+        if (server == null || pendingReconnectCancelAt.isEmpty()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        List<UUID> duePlayers = new ArrayList<>();
+        for (Map.Entry<UUID, Long> entry : pendingReconnectCancelAt.entrySet()) {
+            Long cancelAt = entry.getValue();
+            if (cancelAt != null && now >= cancelAt) {
+                duePlayers.add(entry.getKey());
             }
         }
 
-        GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
-        player.setGameMode(restoreMode);
+        for (UUID playerId : duePlayers) {
+            ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+            if (player == null) {
+                pendingReconnectCancelAt.remove(playerId);
+                continue;
+            }
 
-        String targetLabel = (targetName == null || targetName.isBlank())
-                ? resolveTargetName(server, restoreState.getTargetUuid())
-                : targetName;
-
-        sendPlayerMessage(player, Component.literal("§eYour spectate session ended when you disconnected."), false);
-        sendPlayerMessage(player,
-                Component.literal("§7You were spectating §e" + targetLabel
-                        + "§7. Use §e/spectate <player> §7if you want to spectate again."),
-                false);
+            finalizeReconnectCleanup(player, server);
+        }
     }
 
     public void enforceFreecamLimits(MinecraftServer server) {
@@ -617,6 +651,13 @@ public class SpectateManager {
         }
     }
 
+    private void ensureSpectateCooldown(UUID adminUuid) {
+        if (adminUuid == null || isOnCooldown(adminUuid)) {
+            return;
+        }
+        applySpectateCooldown(adminUuid);
+    }
+
     private long getCooldownRemaining(UUID adminUuid) {
         Long cooldownExpiry = cooldowns.get(adminUuid);
         if (cooldownExpiry == null) {
@@ -626,16 +667,93 @@ public class SpectateManager {
     }
 
     private String resolveTargetName(MinecraftServer server, UUID targetUuid) {
-        if (targetUuid == null || server == null) {
+        if (targetUuid == null) {
             return "unknown player";
         }
 
-        ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
-        if (targetPlayer != null) {
-            return targetPlayer.getName().getString();
+        if (server != null) {
+            ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
+            if (targetPlayer != null) {
+                return targetPlayer.getName().getString();
+            }
         }
 
         return targetUuid.toString();
+    }
+
+    private String resolveBestTargetName(UUID adminUuid, MinecraftServer server, UUID targetUuid) {
+        if (adminUuid != null) {
+            String cached = targetNameByAdmin.get(adminUuid);
+            if (cached != null && !cached.isBlank()) {
+                return cached;
+            }
+        }
+
+        String resolved = resolveTargetName(server, targetUuid);
+        if (adminUuid != null && resolved != null && !resolved.isBlank()) {
+            targetNameByAdmin.put(adminUuid, resolved);
+        }
+        return resolved;
+    }
+
+    private void queueReconnectCleanup(UUID playerId, SpectateState state, String targetName) {
+        if (playerId == null || state == null) {
+            return;
+        }
+
+        pendingReconnectRestores.put(playerId, state);
+        String safeTargetName = (targetName == null || targetName.isBlank())
+                ? resolveTargetName(null, state.getTargetUuid())
+                : targetName;
+        pendingReconnectTargets.put(playerId, safeTargetName);
+        targetNameByAdmin.put(playerId, safeTargetName);
+    }
+
+    private void finalizeReconnectCleanup(ServerPlayer player, MinecraftServer server) {
+        if (player == null || server == null) {
+            return;
+        }
+
+        UUID playerId = player.getUUID();
+        SpectateState restoreState = pendingReconnectRestores.remove(playerId);
+        String targetName = pendingReconnectTargets.remove(playerId);
+        pendingReconnectCancelAt.remove(playerId);
+
+        if (restoreState == null) {
+            return;
+        }
+
+        player.setCamera(player);
+
+        ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
+        if (originalWorld == null) {
+            originalWorld = server.getLevel(Level.OVERWORLD);
+        }
+
+        if (originalWorld != null) {
+            Vec3 pos = restoreState.getPosition();
+            if (!teleportPlayer(player, originalWorld, pos.x, pos.y, pos.z,
+                    restoreState.getYaw(), restoreState.getPitch(), false)) {
+                SpectateMod.LOGGER.warn("Failed to restore {} to saved position after reconnect cleanup",
+                        player.getName().getString());
+            }
+        }
+
+        GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
+        player.setGameMode(restoreMode);
+
+        String targetLabel = (targetName == null || targetName.isBlank())
+                ? resolveBestTargetName(playerId, server, restoreState.getTargetUuid())
+                : targetName;
+
+        sendPlayerMessage(player, Component.literal("§eYour spectate session has been ended after reconnect."), false);
+        sendPlayerMessage(player,
+                Component.literal("§7You were spectating §e" + targetLabel
+                        + "§7. Use §e/spectate <player> §7if you want to spectate again."),
+                false);
+
+        targetNameByAdmin.remove(playerId);
+        saveSpectateData();
     }
 
     private boolean isInDanger(ServerPlayer player) {
@@ -719,11 +837,20 @@ public class SpectateManager {
             }
 
             List<SerializableSpectateState> serializableStates = new ArrayList<>();
-            for (SpectateState state : activeSpectators.values()) {
+            Map<UUID, SpectateState> statesToPersist = new ConcurrentHashMap<>(activeSpectators);
+            for (Map.Entry<UUID, SpectateState> entry : pendingReconnectRestores.entrySet()) {
+                statesToPersist.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+
+            for (Map.Entry<UUID, SpectateState> entry : statesToPersist.entrySet()) {
+                UUID adminUuid = entry.getKey();
+                SpectateState state = entry.getValue();
                 GameType gameType = state.getGameMode() == null ? GameType.SURVIVAL : state.getGameMode();
+                String targetName = resolveBestTargetName(adminUuid, null, state.getTargetUuid());
                 SerializableSpectateState serializable = new SerializableSpectateState(
-                        state.getAdminUuid().toString(),
+                        adminUuid.toString(),
                         state.getTargetUuid().toString(),
+                        targetName,
                         state.getPosition().x,
                         state.getPosition().y,
                         state.getPosition().z,
@@ -762,6 +889,12 @@ public class SpectateManager {
                 return;
             }
 
+            activeSpectators.clear();
+            pendingReconnectRestores.clear();
+            pendingReconnectTargets.clear();
+            pendingReconnectCancelAt.clear();
+            targetNameByAdmin.clear();
+
             for (SerializableSpectateState serializable : serializableStates) {
                 try {
                     UUID adminUuid = UUID.fromString(serializable.getAdminUuid());
@@ -776,13 +909,19 @@ public class SpectateManager {
                     SpectateState state = new SpectateState(adminUuid, targetUuid, position,
                             serializable.getYaw(), serializable.getPitch(),
                             gameMode, dimension, serializable.getStartTime());
-                    activeSpectators.put(adminUuid, state);
+                    String targetName = serializable.getTargetName();
+                    if (targetName == null || targetName.isBlank()) {
+                        targetName = resolveTargetName(server, targetUuid);
+                    }
+
+                    queueReconnectCleanup(adminUuid, state, targetName);
                 } catch (Exception e) {
                     SpectateMod.LOGGER.warn("Failed to restore a spectate state entry; skipping", e);
                 }
             }
 
-            SpectateMod.LOGGER.info("Loaded {} spectate session(s) from disk", activeSpectators.size());
+            SpectateMod.LOGGER.info("Loaded {} reconnect spectate cleanup entr(y/ies) from disk",
+                    pendingReconnectRestores.size());
         } catch (Exception e) {
             SpectateMod.LOGGER.error("Failed to load spectate data", e);
         }
