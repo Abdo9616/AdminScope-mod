@@ -353,7 +353,7 @@ public class SpectateManager {
         long delaySeconds = Math.max(1L, (REJOIN_CANCEL_DELAY_MILLIS + 999L) / 1000L);
         sendPlayerMessage(player, Component.literal("§eReconnect detected while spectating."), false);
         sendPlayerMessage(player,
-                Component.literal("§7For safety, your spectate session will end in §e" + delaySeconds
+                Component.literal("§7Your spectate session will resume in §e" + delaySeconds
                         + "s§7. Please wait..."),
                 false);
     }
@@ -726,37 +726,78 @@ public class SpectateManager {
             return;
         }
 
-        player.setCamera(player);
-
-        ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
-        if (originalWorld == null) {
-            originalWorld = server.getLevel(Level.OVERWORLD);
-        }
-
-        if (originalWorld != null) {
-            Vec3 pos = restoreState.getPosition();
-            if (!teleportPlayer(player, originalWorld, pos.x, pos.y, pos.z,
-                    restoreState.getYaw(), restoreState.getPitch(), false)) {
-                SpectateMod.LOGGER.warn("Failed to restore {} to saved position after reconnect cleanup",
-                        player.getName().getString());
-            }
-        }
-
-        GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
-        player.setGameMode(restoreMode);
-        ensureSpectateCooldown(playerId);
-
+        // Try to resume spectating the target if they are online.
+        ServerPlayer target = server.getPlayerList().getPlayer(restoreState.getTargetUuid());
         String targetLabel = (targetName == null || targetName.isBlank())
                 ? resolveBestTargetName(playerId, server, restoreState.getTargetUuid())
                 : targetName;
 
-        sendPlayerMessage(player, Component.literal("§eYour spectate session has been ended after reconnect."), false);
-        sendPlayerMessage(player,
-                Component.literal("§7You were spectating §e" + targetLabel
-                        + "§7. Use §e/spectate <player> §7if you want to spectate again."),
-                false);
+        if (target != null) {
+            // Resume spectating: keep original position in state for later /spectate stop.
+            advancementSnapshots.put(playerId, snapshotCompletedAdvancements(player));
+            activeSpectators.put(playerId, restoreState);
+            targetNameByAdmin.put(playerId, target.getName().getString());
+            lastAllowedPositions.put(playerId, new Vec3(player.getX(), player.getY(), player.getZ()));
+            freecamExceedCounts.remove(playerId);
+            freecamExceedWindows.remove(playerId);
+            cameraLockTicks.put(playerId, INITIAL_CAMERA_LOCK_TICKS);
 
-        targetNameByAdmin.remove(playerId);
+            player.setGameMode(GameType.SPECTATOR);
+
+            if (!player.level().dimension().equals(target.level().dimension())) {
+                ServerLevel targetWorld = (ServerLevel) target.level();
+                if (!teleportPlayer(player, targetWorld, target.getX(), target.getY(), target.getZ(),
+                        target.getYRot(), target.getXRot(), false)) {
+                    SpectateMod.LOGGER.warn("Failed to move {} into target dimension during spectate resume",
+                            player.getName().getString());
+                }
+            }
+
+            player.setCamera(target);
+            rollbackSpectatorAdvancements(player);
+
+            sendPlayerMessage(player,
+                    Component.literal("§aSpectate session resumed. You are now spectating §e"
+                            + target.getName().getString() + "§a."), false);
+            sendPlayerMessage(player,
+                    Component.literal("§7Use §e/spectate stop §7to stop spectating."), false);
+
+            SpectateMod.LOGGER.info("{} resumed spectating {} after reconnect",
+                    player.getName().getString(), target.getName().getString());
+        } else {
+            // Target is offline: fall back to ending spectation and teleporting back.
+            player.setCamera(player);
+
+            ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
+            if (originalWorld == null) {
+                originalWorld = server.getLevel(Level.OVERWORLD);
+            }
+
+            if (originalWorld != null) {
+                Vec3 pos = restoreState.getPosition();
+                if (!teleportPlayer(player, originalWorld, pos.x, pos.y, pos.z,
+                        restoreState.getYaw(), restoreState.getPitch(), false)) {
+                    SpectateMod.LOGGER.warn("Failed to restore {} to saved position after reconnect cleanup",
+                            player.getName().getString());
+                }
+            }
+
+            GameType restoreMode = restoreState.getGameMode() == null ? GameType.SURVIVAL : restoreState.getGameMode();
+            player.setGameMode(restoreMode);
+            ensureSpectateCooldown(playerId);
+
+            sendPlayerMessage(player,
+                    Component.literal("§eSpectate session ended: §c" + targetLabel + "§e is no longer online."),
+                    false);
+            sendPlayerMessage(player,
+                    Component.literal("§7Use §e/spectate <player> §7if you want to spectate someone else."),
+                    false);
+
+            targetNameByAdmin.remove(playerId);
+            SpectateMod.LOGGER.info("{} spectate session ended after reconnect (target {} offline)",
+                    player.getName().getString(), targetLabel);
+        }
+
         saveSpectateData();
     }
 
