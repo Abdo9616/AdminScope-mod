@@ -41,6 +41,13 @@ import java.lang.reflect.Method;
 public class SpectateManager {
     private static final String DATA_DIR = "config/spectatemod";
     private static final String DATA_FILE = "spectate_data.json";
+
+    /**
+     * How long to wait after an admin disconnects while spectating before restoring on rejoin.
+     * This matches the behavior you referenced ("waits 5 seconds").
+     */
+    private static final long REJOIN_RESTORE_DELAY_MILLIS = 5000L;
+
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     private final Map<UUID, SpectateState> activeSpectators = new ConcurrentHashMap<>();
@@ -50,6 +57,14 @@ public class SpectateManager {
     private final Map<UUID, Integer> freecamExceedCounts = new ConcurrentHashMap<>();
     private final Map<UUID, Long> freecamExceedWindows = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
+
+    // Spectators who disconnected while spectating (persisted to disk, restored on rejoin)
+    private final Map<UUID, SpectateState> disconnectedSpectators = new ConcurrentHashMap<>();
+    // pending apply after delay (in-memory scheduling)
+    private final Map<UUID, Long> pendingApplyAt = new ConcurrentHashMap<>();
+
+    public SpectateManager() {
+    }
 
     public boolean canSpectate(ServerPlayerEntity admin, ServerPlayerEntity target) {
         if (JailModCompat.isPlayerJailed(admin)) {
@@ -182,17 +197,34 @@ public class SpectateManager {
         return activeSpectators.get(adminUuid);
     }
 
+    /**
+     * Called on any disconnect. If the disconnecting player was spectating,
+     * we persist a pending resume record and schedule delayed restoration
+     * on rejoin.
+     */
     public void handlePlayerDisconnect(ServerPlayerEntity player, MinecraftServer server) {
         UUID playerId = player.getUuid();
-        if (activeSpectators.remove(playerId) != null) {
+
+        // If player is an active spectating admin: persist pending resume data.
+        SpectateState state = activeSpectators.get(playerId);
+        if (state != null) {
+            activeSpectators.remove(playerId);
+
             lastAllowedPositions.remove(playerId);
             freecamExceedCounts.remove(playerId);
             freecamExceedWindows.remove(playerId);
             freecamWarnings.remove(playerId);
             cameraWarnings.remove(playerId);
+
+            if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
+                disconnectedSpectators.put(playerId, state);
+                saveSpectateData();
+                pendingApplyAt.put(playerId, System.currentTimeMillis() + REJOIN_RESTORE_DELAY_MILLIS);
+            }
             return;
         }
 
+        // Otherwise, if someone else is spectating this player as a target, stop those sessions.
         List<UUID> toStop = new ArrayList<>();
         for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
             if (entry.getValue().getTargetUuid().equals(playerId)) {
@@ -212,6 +244,88 @@ public class SpectateManager {
                 freecamWarnings.remove(adminId);
                 cameraWarnings.remove(adminId);
             }
+        }
+    }
+
+    /**
+     * Called on join. We schedule applying pending resume after delay.
+     */
+    public void handlePlayerJoin(ServerPlayerEntity player, MinecraftServer server) {
+        UUID id = player.getUuid();
+        if (!SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
+            return;
+        }
+
+        if (disconnectedSpectators.containsKey(id) && !pendingApplyAt.containsKey(id)) {
+            pendingApplyAt.put(id, System.currentTimeMillis() + REJOIN_RESTORE_DELAY_MILLIS);
+        }
+    }
+
+    /**
+     * Runs each server tick. Applies pending resume when the delay expires.
+     */
+    public void processPendingReconnectCleanup(MinecraftServer server) {
+        long now = System.currentTimeMillis();
+        List<UUID> toApply = new ArrayList<>();
+        for (Map.Entry<UUID, Long> e : pendingApplyAt.entrySet()) {
+            if (now >= e.getValue()) {
+                toApply.add(e.getKey());
+            }
+        }
+
+        for (UUID adminId : toApply) {
+            pendingApplyAt.remove(adminId);
+
+            ServerPlayerEntity player = server.getPlayerManager().getPlayer(adminId);
+            if (player == null) {
+                // Player not present; keep pending data for next join.
+                continue;
+            }
+
+            SpectateState savedState = disconnectedSpectators.remove(adminId);
+            if (savedState == null) {
+                continue;
+            }
+
+            applyDisconnectedResume(player, server, savedState);
+        }
+    }
+
+    private void applyDisconnectedResume(ServerPlayerEntity player, MinecraftServer server, SpectateState savedState) {
+        try {
+            // Force correct POV/camera first.
+            player.setCameraEntity(player);
+
+            // Teleport the player back to their original pre-spectate position.
+            ServerWorld originalWorld = server.getWorld(savedState.getDimension());
+            if (originalWorld != null) {
+                Vec3d pos = savedState.getPosition();
+                player.teleport(
+                        originalWorld,
+                        pos.x, pos.y, pos.z,
+                        EnumSet.noneOf(PositionFlag.class),
+                        savedState.getYaw(),
+                        savedState.getPitch(),
+                        false
+                );
+            }
+
+            player.changeGameMode(savedState.getGameMode());
+
+            // Re-attach spectate state to target so camera POV matches.
+            ServerPlayerEntity target = server.getPlayerManager().getPlayer(savedState.getTargetUuid());
+            if (target != null) {
+                player.setCameraEntity(target);
+                player.changeGameMode(GameMode.SPECTATOR);
+
+                // Rehydrate server-side tracking so /spectate stop returns to the original position.
+                activeSpectators.put(savedState.getAdminUuid(), savedState);
+            }
+
+            saveSpectateData();
+
+        } catch (Exception e) {
+            SpectateMod.LOGGER.error("Failed to restore spectate state after reconnect", e);
         }
     }
 
@@ -413,7 +527,10 @@ public class SpectateManager {
             }
 
             List<SerializableSpectateState> serializableStates = new ArrayList<>();
-            for (SpectateState state : activeSpectators.values()) {
+            // Save both active and disconnected spectators so state survives server restarts
+            List<SpectateState> allStates = new ArrayList<>(activeSpectators.values());
+            allStates.addAll(disconnectedSpectators.values());
+            for (SpectateState state : allStates) {
                 SerializableSpectateState serializable = new SerializableSpectateState(
                         state.getAdminUuid().toString(),
                         state.getTargetUuid().toString(),
@@ -444,7 +561,7 @@ public class SpectateManager {
         }
 
         try (FileReader reader = new FileReader(dataFile)) {
-            Type listType = new TypeToken<List<SerializableSpectateState>>() { }.getType();
+            Type listType = new TypeToken<List<SerializableSpectateState>>() {}.getType();
             List<SerializableSpectateState> serializableStates = gson.fromJson(reader, listType);
 
             if (serializableStates == null || serializableStates.isEmpty()) {
@@ -467,14 +584,17 @@ public class SpectateManager {
 
                     SpectateState state = new SpectateState(adminUuid, targetUuid, position,
                             yaw, pitch, gameMode, dimension, serializable.getStartTime());
-                    activeSpectators.put(adminUuid, state);
+                    // On server start no players are online yet, so all loaded states
+                    // go into disconnectedSpectators. They will be moved to activeSpectators
+                    // when the player joins and the resume is applied.
+                    disconnectedSpectators.put(adminUuid, state);
                 } catch (Exception e) {
                     SpectateMod.LOGGER.error("Failed to restore spectate state", e);
                 }
             }
 
             SpectateMod.LOGGER.info("Loaded {} spectate session(s) from disk",
-                    activeSpectators.size());
+                    disconnectedSpectators.size());
         } catch (Exception e) {
             SpectateMod.LOGGER.error("Failed to load spectate data", e);
         }
@@ -513,3 +633,4 @@ public class SpectateManager {
         }
     }
 }
+

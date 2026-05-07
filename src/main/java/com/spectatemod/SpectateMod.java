@@ -3,14 +3,25 @@ package com.spectatemod;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+
+
 import org.slf4j.Logger;
+
 import org.slf4j.LoggerFactory;
 
 import com.spectatemod.command.SpectateCommand;
 import com.spectatemod.config.ConfigManager;
 import com.spectatemod.manager.SpectateManager;
+
+
+
+
+
+
+
+
 
 public class SpectateMod implements ModInitializer {
     public static final String MOD_ID = "adminspectator";
@@ -38,20 +49,42 @@ public class SpectateMod implements ModInitializer {
         // Register server lifecycle events
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             spectateManager.loadSpectateData();
+
+
             LOGGER.info("Spectate Mod loaded successfully");
         });
+
         
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             spectateManager.saveSpectateData();
+
+
             LOGGER.info("Spectate Mod shutting down");
         });
+
+
+
+
 
         ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.enforceFreecamLimits(server));
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+
             spectateManager.handlePlayerDisconnect(handler.getPlayer(), server);
         });
+
+// Re-apply correct spectate state on rejoin / respawn to prevent stale spectator positions.
+        // We implement JOIN-based restore in manager (with a delayed finalize window).
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            spectateManager.handlePlayerJoin(handler.getPlayer(), server);
+        });
+
+        ServerTickEvents.END_SERVER_TICK.register(server -> spectateManager.processPendingReconnectCleanup(server));
+
     }
+
+
+
     
     public static SpectateManager getSpectateManager() {
         return spectateManager;
