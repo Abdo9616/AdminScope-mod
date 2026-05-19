@@ -4,6 +4,7 @@
   "version": "${version}",
   "name": "AdminScope",
   "description": "A server-side moderation tool that allows admins to spectate players",
+  "icon": "assets/adminscope/icon.png",
   "authors": ["Abdo9616"],
   "contact": {
     "homepage": "https://github.com/Abdo9616/AdminScope-mod",

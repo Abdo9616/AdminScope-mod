@@ -30,19 +30,44 @@ jobs:
       - name: Build Mod
         run: ./gradlew build --no-daemon
 
+      - name: Read Minecraft version from gradle.properties
+        id: mc
+        run: |
+          mc_version=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2 | tr -d ' ')
+          echo "version=$mc_version" >> "$GITHUB_OUTPUT"
+
       - name: Locate Release Jar
         id: jar
         run: |
-          jar_path="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' | head -n 1)"
+          jar_path="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' | head -n 1)"
           if [ -z "$jar_path" ]; then
             echo "No release jar found in build/libs" >&2
             exit 1
           fi
           echo "jar_path=$jar_path" >> "$GITHUB_OUTPUT"
+          echo "Found release jar: $jar_path"
 
-      - name: Upload Jar To Release
+      - name: Upload Jar To GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.jar.outputs.jar_path }}
           fail_on_unmatched_files: true
+
+      - name: Publish to Modrinth
+        if: github.event_name == 'release'
+        uses: cloudnode-pro/modrinth-publish@v2
+        with:
+          token: ${{ secrets.MODRINTH_TOKEN }}
+          project: W8fUtxyA
+          name: ${{ github.event.release.name }}
+          version: ${{ github.event.release.tag_name }}
+          changelog: ${{ github.event.release.body }}
+          loaders: fabric
+          game-versions: ${{ steps.mc.outputs.version }}
+          files: ${{ steps.jar.outputs.jar_path }}
+          dependencies: |-
+            [{
+              "project_id": "P7dR8mSH",
+              "dependency_type": "required"
+            }]
