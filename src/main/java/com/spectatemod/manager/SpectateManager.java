@@ -286,23 +286,46 @@ public class SpectateManager {
         }
 
         for (UUID adminId : toStop) {
+            SpectateState adminState = activeSpectators.remove(adminId);
+            if (adminState == null) {
+                continue;
+            }
+
             ServerPlayer admin = server.getPlayerList().getPlayer(adminId);
             if (admin != null) {
-                stopSpectating(admin, "§cSpectating ended: player left the server.");
-            } else {
-                activeSpectators.remove(adminId);
-                advancementSnapshots.remove(adminId);
-                cameraLockTicks.remove(adminId);
-                targetNameByAdmin.remove(adminId);
-                pendingReconnectRestores.remove(adminId);
-                pendingReconnectTargets.remove(adminId);
-                pendingReconnectCancelAt.remove(adminId);
-                lastAllowedPositions.remove(adminId);
-                freecamExceedCounts.remove(adminId);
-                freecamExceedWindows.remove(adminId);
-                freecamWarnings.remove(adminId);
-                cameraWarnings.remove(adminId);
+                rollbackSpectatorAdvancements(admin);
             }
+            advancementSnapshots.remove(adminId);
+            cameraLockTicks.remove(adminId);
+            lastAllowedPositions.remove(adminId);
+            freecamExceedCounts.remove(adminId);
+            freecamExceedWindows.remove(adminId);
+            freecamWarnings.remove(adminId);
+            cameraWarnings.remove(adminId);
+
+            // Queue reconnect cleanup instead of calling stopSpectating() directly.
+            // During server shutdown, stopSpectating() clears all persisted state but
+            // the game mode restoration may not persist to the player's data file,
+            // leaving the admin stuck in spectator mode with no recovery on next startup.
+            // By queueing a reconnect cleanup, the state is preserved to disk and
+            // finalizeReconnectCleanup() will properly restore the admin on their next join.
+            String targetName = resolveBestTargetName(adminId, server, adminState.getTargetUuid());
+            queueReconnectCleanup(adminId, adminState, targetName);
+
+            if (admin != null) {
+                // If the admin is still online (target left during normal gameplay),
+                // schedule immediate cleanup so they are restored on the next tick.
+                long cleanupAt = System.currentTimeMillis() + REJOIN_CANCEL_DELAY_MILLIS;
+                pendingReconnectCancelAt.put(adminId, cleanupAt);
+
+                sendPlayerMessage(admin,
+                        Component.literal("§cSpectating ended: player left the server."), false);
+                sendPlayerMessage(admin,
+                        Component.literal("§7Restoring your position in a moment..."), false);
+            }
+
+            SpectateMod.LOGGER.info("Spectate session for {} ended (target {} disconnected)",
+                    adminId, targetName);
         }
 
         if (!toStop.isEmpty()) {
