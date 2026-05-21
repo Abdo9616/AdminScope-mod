@@ -1,3 +1,5 @@
+<img src="src\main\resources\assets\adminscope\icon.png" alt="AdminScope" width=128 height=128/>
+
 AdminScope Mod (Fabric)
 ============================
 
