@@ -1,9 +1,20 @@
-## Readme
-
 AdminScope Mod (Fabric)
 ============================
 
+[![Get it on Modrinth](https://img.shields.io/badge/Get%20it%20on-Modrinth-black?style=for-the-badge&logo=modrinth&logoColor=00AF5C)](https://modrinth.com/project/W8fUtxyA)
+<a href="https://www.curseforge.com/minecraft/mc-mods/adminscope">
+  <img
+    alt="Get it on CurseForge"
+    src="https://img.shields.io/badge/Get%20it%20on-CurseForge-f16436?style=for-the-badge&logo=curseforge&logoColor=white"
+  />
+</a>
+
+
+
 The **AdminScope Mod** is a server-side moderation tool that lets authorized staff spectate a player using the target player's POV, then instantly return to their exact position and gamemode. It is built for survival servers and avoids freecam abuse by enforcing a configurable distance limit.
+
+
+
 
 ----------------------------------------------------------------
 
@@ -43,6 +54,14 @@ Installation
 
 1.  Place the mod's `.jar` file in the server `mods` folder.
 2.  Start the server to generate configuration files.
+
+Download
+----------
+
+The mod is available on:
+* **Modrinth**: https://modrinth.com/project/W8fUtxyA
+* **CurseForge**: https://www.curseforge.com/minecraft/mc-mods/adminscope
+
 
 Available Commands
 ------------------
