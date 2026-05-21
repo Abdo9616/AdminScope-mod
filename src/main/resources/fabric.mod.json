@@ -11,7 +11,7 @@
     "sources": "https://github.com/Abdo9616/AdminScope-mod"
   },
   "license": "MIT",
-  "environment": "server",
+  "environment": "*",
   "entrypoints": {
     "main": ["com.spectatemod.SpectateMod"]
   },
