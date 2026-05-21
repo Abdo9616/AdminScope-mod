@@ -70,8 +70,15 @@ public class SpectateCommand {
             return false;
         }
 
-        // Stable OP check using the server's op list
+        // In singleplayer environments, allow the command to bypass the OP list check.
+        // It's a fully trusted environment, and Singleplayer owners aren't placed in the OP list.
+        if (source.getServer().isSingleplayer()) {
+            return true;
+        }
+
         String playerName = player.getName().getString();
+
+        // Dedicated server OP check using the server's op list
         for (String opName : source.getServer().getPlayerManager().getOpList().getNames()) {
             if (opName.equalsIgnoreCase(playerName)) {
                 return true;
