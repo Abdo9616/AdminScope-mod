@@ -46,7 +46,7 @@ How to use:
 Requirements
 ------------
 
-*   Minecraft 26.1
+*   Minecraft 26.2
 *   Fabric Loader
 *   Fabric API
 *   Java 25

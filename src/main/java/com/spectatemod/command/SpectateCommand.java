@@ -10,9 +10,9 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permissions;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +25,7 @@ public class SpectateCommand {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         removeVanillaSpectate(dispatcher);
         dispatcher.register(Commands.literal("spectate")
-            .requires(SpectateCommand::hasPermission)
+            .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
             .then(Commands.argument("player", EntityArgument.player())
                 .executes(SpectateCommand::startSpectating))
             .then(Commands.literal("stop")
@@ -153,6 +153,7 @@ public class SpectateCommand {
     }
 
     private static boolean hasPermission(CommandSourceStack source) {
+        // Console/command blocks always have permission
         if (!source.isPlayer()) {
             return true;
         }
@@ -162,10 +163,15 @@ public class SpectateCommand {
             return false;
         }
 
-        if (isOperator(source, player)) {
+        // Use the 26.2 PermissionSet API — this correctly handles:
+        //   - Singleplayer host (gets ALL_PERMISSIONS)
+        //   - Dedicated server ops (gets level-based permissions)
+        //   - LAN host (gets ALL_PERMISSIONS when cheats enabled)
+        if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
             return true;
         }
 
+        // Fallback: check admin roles from config (tag-based permissions)
         List<String> adminRoles = SpectateMod.getConfigManager().getConfig().getAdminRoles();
         Set<String> tags = player.entityTags();
         for (String role : adminRoles) {
@@ -174,8 +180,9 @@ public class SpectateCommand {
                 continue;
             }
 
+            // "op" role maps to the gamemaster permission check
             if (trimmedRole.equalsIgnoreCase("op")) {
-                if (isOperator(source, player)) {
+                if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
                     return true;
                 }
                 continue;
@@ -186,51 +193,6 @@ public class SpectateCommand {
             }
         }
 
-        return false;
-    }
-
-    private static boolean isOperator(CommandSourceStack source, ServerPlayer player) {
-        try {
-            var server = source.getServer();
-            if (server == null || server.getPlayerList() == null) {
-                return false;
-            }
-
-            Object playerList = server.getPlayerList();
-
-            // Prefer stable API call for this mapping.
-            try {
-                return (boolean) playerList.getClass()
-                        .getMethod("isOp", player.nameAndId().getClass())
-                        .invoke(playerList, player.nameAndId());
-            } catch (NoSuchMethodException ignored) {
-                // TODO(AS-206): Revisit direct API call once mapping signatures are finalized.
-            }
-
-            // Fallback across mapping variants.
-            Object[] candidates = {
-                player.nameAndId(),
-                player.getGameProfile(),
-                player.getUUID()
-            };
-
-            for (Method method : playerList.getClass().getMethods()) {
-                if (!"isOp".equals(method.getName())
-                        || method.getParameterCount() != 1
-                        || method.getReturnType() != boolean.class) {
-                    continue;
-                }
-
-                Class<?> parameterType = method.getParameterTypes()[0];
-                for (Object candidate : candidates) {
-                    if (candidate != null && parameterType.isAssignableFrom(candidate.getClass())) {
-                        return (boolean) method.invoke(playerList, candidate);
-                    }
-                }
-            }
-        } catch (Exception e) {
-            SpectateMod.LOGGER.debug("Unable to resolve OP status for {}", player.getName().getString(), e);
-        }
         return false;
     }
 
