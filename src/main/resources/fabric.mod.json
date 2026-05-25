@@ -7,13 +7,15 @@
   "icon": "assets/adminscope/icon.png",
   "authors": ["Abdo9616"],
   "contact": {
-    "homepage": "https://github.com/Abdo9616/AdminScope-mod",
-    "sources": "https://github.com/Abdo9616/AdminScope-mod"
+    "homepage": "https://modrinth.com/project/W8fUtxyA",
+    "sources": "https://github.com/Abdo9616/AdminScope-mod",
+    "issues": "https://github.com/Abdo9616/AdminScope-mod/issues"
   },
   "license": "MIT",
   "environment": "*",
   "entrypoints": {
-    "main": ["com.spectatemod.SpectateMod"]
+    "main": ["com.spectatemod.SpectateMod"],
+    "modmenu": ["com.spectatemod.client.modmenu.AdminScopeModMenuIntegration"]
   },
   "mixins": [],
   "depends": {
@@ -21,5 +23,19 @@
     "minecraft": "~26.1",
     "java": ">=25",
     "fabric-api": "*"
+  },
+  "recommends": {
+    "modmenu": "*",
+    "cloth-config": "*",
+    "cloth-config2": "*"
+  },
+  "custom": {
+    "modmenu": {
+      "links": {
+        "modmenu.modrinth": "https://modrinth.com/project/W8fUtxyA",
+        "modmenu.curseforge": "https://www.curseforge.com/minecraft/mc-mods/adminscope"
+      },
+      "update_checker": true
+    }
   }
 }
