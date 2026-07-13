@@ -54,8 +54,34 @@ jobs:
       - name: Make Gradle Wrapper Executable
         run: chmod +x gradlew
 
-      - name: Build Mod
-        run: ./gradlew build --no-daemon
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: ${{ runner.os }}-gradle-deps-${{ hashFiles('**/gradle.properties','**/build.gradle','**/settings.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-deps-
+
+      - name: Build Mod (retry on transient failures)
+        run: |
+          set -e
+          attempts=3
+          for i in $(seq 1 $attempts); do
+            echo "Build attempt $i/$attempts"
+            if ./gradlew build --no-daemon; then
+              echo "Build succeeded on attempt $i"
+              break
+            fi
+            if [ "$i" -eq "$attempts" ]; then
+              echo "Build failed after $attempts attempts"
+              exit 1
+            fi
+            sleep_time=$((i * 5))
+            echo "Build failed — retrying in ${sleep_time}s..."
+            sleep $sleep_time
+          done
 
       - name: Read Minecraft version from gradle.properties
         id: mc
