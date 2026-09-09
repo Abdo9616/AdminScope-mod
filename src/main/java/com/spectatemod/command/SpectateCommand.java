@@ -25,7 +25,7 @@ public class SpectateCommand {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         removeVanillaSpectate(dispatcher);
         dispatcher.register(Commands.literal("spectate")
-            .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+            .requires(SpectateCommand::hasPermission)
             .then(Commands.argument("player", EntityArgument.player())
                 .executes(SpectateCommand::startSpectating))
             .then(Commands.literal("stop")
