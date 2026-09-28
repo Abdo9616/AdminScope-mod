@@ -163,7 +163,7 @@ public class SpectateCommand {
             return false;
         }
 
-        // Use the 26.2 PermissionSet API — this correctly handles:
+        // Use the PermissionSet API — this correctly handles:
         //   - Singleplayer host (gets ALL_PERMISSIONS)
         //   - Dedicated server ops (gets level-based permissions)
         //   - LAN host (gets ALL_PERMISSIONS when cheats enabled)

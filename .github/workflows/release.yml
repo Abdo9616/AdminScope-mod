@@ -128,6 +128,12 @@ jobs:
           game-versions: ${{ github.event.inputs.game_versions || steps.mc.outputs.version }}
           java: 25
 
+          # Modrinth's server-only environment supports singleplayer too.
+          modrinth-environment: server
+
+          # CurseForge uses its supported dedicated-server and singleplayer environments.
+          curseforge-environment: dedicated-server | singleplayer
+
           files: ${{ steps.jar.outputs.jar_path }}
 
           dependencies: |
