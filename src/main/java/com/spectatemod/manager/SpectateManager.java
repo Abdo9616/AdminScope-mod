@@ -52,7 +52,7 @@ public class SpectateManager {
             Component.literal("§cAn internal error occurred while executing the command.");
     private static final int INITIAL_CAMERA_LOCK_TICKS = 10;
     private static final int CAMERA_ENTRY_DELAY_TICKS = 10; // Half a second at 20 TPS.
-    private static final long REJOIN_CANCEL_DELAY_MILLIS = 5000L;
+    private static final long REJOIN_CANCEL_DELAY_MILLIS = 3000L;
 
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
