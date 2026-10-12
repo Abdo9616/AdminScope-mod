@@ -364,6 +364,10 @@ public class SpectateManager {
             return;
         }
 
+        // Keep the reconnecting admin safe during the delay before the session is resumed
+        // or ended. Other login handlers can also change the player's game mode afterward.
+        ensureSpectatorMode(player);
+
         if (targetName == null || targetName.isBlank()) {
             targetName = resolveBestTargetName(playerId, server, restoreState.getTargetUuid());
             pendingReconnectTargets.put(playerId, targetName);
@@ -389,9 +393,19 @@ public class SpectateManager {
         long now = System.currentTimeMillis();
         List<UUID> duePlayers = new ArrayList<>();
         for (Map.Entry<UUID, Long> entry : pendingReconnectCancelAt.entrySet()) {
+            UUID playerId = entry.getKey();
             Long cancelAt = entry.getValue();
-            if (cancelAt != null && now >= cancelAt) {
+            if (cancelAt == null) {
+                continue;
+            }
+
+            if (now >= cancelAt) {
                 duePlayers.add(entry.getKey());
+            } else {
+                ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+                if (player != null && pendingReconnectRestores.containsKey(playerId)) {
+                    ensureSpectatorMode(player);
+                }
             }
         }
 
@@ -822,6 +836,12 @@ public class SpectateManager {
         }
 
         saveSpectateData();
+    }
+
+    private void ensureSpectatorMode(ServerPlayer player) {
+        if (player.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
+            player.setGameMode(GameType.SPECTATOR);
+        }
     }
 
     private boolean isInDanger(ServerPlayer player) {
