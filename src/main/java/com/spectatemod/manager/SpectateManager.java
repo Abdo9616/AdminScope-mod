@@ -6,11 +6,14 @@ import com.google.gson.reflect.TypeToken;
 import com.spectatemod.SpectateMod;
 import com.spectatemod.data.SerializableSpectateState;
 import com.spectatemod.data.SpectateState;
+import net.minecraft.ChatFormatting;
 import net.minecraft.advancements.AdvancementHolder;
 import net.minecraft.advancements.AdvancementProgress;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -162,7 +165,8 @@ public class SpectateManager {
 
         sendPlayerMessage(admin,
                 Component.literal("§aYou are now spectating §e" + target.getName().getString() + "§a."), false);
-        sendPlayerMessage(admin, Component.literal("§7Use §e/spectate stop §7to stop spectating."), false);
+        sendStopSpectatingHint(admin);
+        sendSpectatePovHint(admin);
 
         String adminName = admin.getName().getString();
         String targetName = target.getName().getString();
@@ -171,6 +175,49 @@ public class SpectateManager {
 
     public void stopSpectating(ServerPlayer admin) {
         stopSpectating(admin, null);
+    }
+
+    public boolean returnToTargetPov(ServerPlayer admin) {
+        if (admin == null) {
+            return false;
+        }
+
+        UUID adminUuid = admin.getUUID();
+        SpectateState state = activeSpectators.get(adminUuid);
+        if (state == null) {
+            sendPlayerMessage(admin, Component.literal("§cYou are not currently spectating anyone."), false);
+            return false;
+        }
+
+        MinecraftServer server = admin.level().getServer();
+        ServerPlayer target = server == null ? null : server.getPlayerList().getPlayer(state.getTargetUuid());
+        if (target == null) {
+            sendPlayerMessage(admin, Component.literal("§cThe player you are spectating is no longer online."), false);
+            return false;
+        }
+
+        admin.setGameMode(GameType.SPECTATOR);
+        if (admin.getCamera() != target || !admin.level().dimension().equals(target.level().dimension())) {
+            ServerLevel targetWorld = (ServerLevel) target.level();
+            if (!teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                    target.getYRot(), target.getXRot(), false)) {
+                sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
+                SpectateMod.LOGGER.warn("Failed to return {} to {}'s position for POV reset",
+                        admin.getName().getString(), target.getName().getString());
+                return false;
+            }
+        }
+
+        admin.setCamera(target);
+        pendingCameraEntryTicks.remove(adminUuid);
+        cameraLockTicks.remove(adminUuid);
+        lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+        freecamExceedCounts.remove(adminUuid);
+        freecamExceedWindows.remove(adminUuid);
+        freecamWarnings.remove(adminUuid);
+        sendPlayerMessage(admin,
+                Component.literal("§aReturned to §e" + target.getName().getString() + "§a's POV."), true);
+        return true;
     }
 
     private void stopSpectating(ServerPlayer admin, String reason) {
@@ -836,8 +883,8 @@ public class SpectateManager {
             sendPlayerMessage(player,
                     Component.literal("§aSpectate session resumed. You are now spectating §e"
                             + target.getName().getString() + "§a."), false);
-            sendPlayerMessage(player,
-                    Component.literal("§7Use §e/spectate stop §7to stop spectating."), false);
+            sendStopSpectatingHint(player);
+            sendSpectatePovHint(player);
 
             SpectateMod.LOGGER.info("{} resumed spectating {} after reconnect",
                     player.getName().getString(), target.getName().getString());
@@ -884,6 +931,36 @@ public class SpectateManager {
         if (player.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
             player.setGameMode(GameType.SPECTATOR);
         }
+    }
+
+    private void sendSpectatePovHint(ServerPlayer player) {
+        Component button = Component.literal("[Return to target POV]")
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.AQUA)
+                        .withUnderlined(true)
+                        .withClickEvent(new ClickEvent.RunCommand("/spectate pov"))
+                        .withHoverEvent(new HoverEvent.ShowText(
+                                Component.literal("Return to the player you are spectating."))));
+        sendPlayerMessage(player,
+                Component.literal("§7In freecam? Click ")
+                        .append(button)
+                        .append(Component.literal(" §7or use §e/spectate pov§7.")),
+                false);
+    }
+
+    private void sendStopSpectatingHint(ServerPlayer player) {
+        Component stopCommand = Component.literal("/spectate stop")
+                .withStyle(style -> style
+                        .withColor(ChatFormatting.YELLOW)
+                        .withUnderlined(true)
+                        .withClickEvent(new ClickEvent.RunCommand("/spectate stop"))
+                        .withHoverEvent(new HoverEvent.ShowText(
+                                Component.literal("Stop spectating and return to your saved position."))));
+        sendPlayerMessage(player,
+                Component.literal("§7Use ")
+                        .append(stopCommand)
+                        .append(Component.literal(" §7to stop spectating.")),
+                false);
     }
 
     private boolean isInDanger(ServerPlayer player) {

@@ -30,6 +30,8 @@ public class SpectateCommand {
                 .executes(SpectateCommand::startSpectating))
             .then(Commands.literal("stop")
                 .executes(SpectateCommand::stopSpectating))
+            .then(Commands.literal("pov")
+                .executes(SpectateCommand::returnToTargetPov))
             .then(Commands.literal("reload")
                 .executes(SpectateCommand::reloadConfig)));
     }
@@ -138,6 +140,17 @@ public class SpectateCommand {
             context.getSource().sendFailure(INTERNAL_ERROR_MESSAGE);
         }
         return 0;
+    }
+
+    private static int returnToTargetPov(CommandContext<CommandSourceStack> context) {
+        try {
+            ServerPlayer admin = context.getSource().getPlayerOrException();
+            return SpectateMod.getSpectateManager().returnToTargetPov(admin) ? 1 : 0;
+        } catch (Exception e) {
+            SpectateMod.LOGGER.error("Failed to return spectator to target POV", e);
+            context.getSource().sendFailure(INTERNAL_ERROR_MESSAGE);
+            return 0;
+        }
     }
 
     private static int reloadConfig(CommandContext<CommandSourceStack> context) {
