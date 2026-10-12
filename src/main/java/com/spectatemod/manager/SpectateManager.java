@@ -51,6 +51,7 @@ public class SpectateManager {
     private static final Component INTERNAL_ERROR_MESSAGE =
             Component.literal("§cAn internal error occurred while executing the command.");
     private static final int INITIAL_CAMERA_LOCK_TICKS = 10;
+    private static final int CAMERA_ENTRY_DELAY_TICKS = 10; // Half a second at 20 TPS.
     private static final long REJOIN_CANCEL_DELAY_MILLIS = 5000L;
 
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
@@ -63,6 +64,7 @@ public class SpectateManager {
     private final Map<UUID, Long> freecamExceedWindows = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> cameraLockTicks = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> pendingCameraEntryTicks = new ConcurrentHashMap<>();
     private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
     private final Map<UUID, SpectateState> pendingReconnectRestores = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingReconnectTargets = new ConcurrentHashMap<>();
@@ -137,6 +139,7 @@ public class SpectateManager {
         freecamExceedCounts.remove(adminUuid);
         freecamExceedWindows.remove(adminUuid);
         cameraLockTicks.put(adminUuid, INITIAL_CAMERA_LOCK_TICKS);
+        pendingCameraEntryTicks.put(adminUuid, CAMERA_ENTRY_DELAY_TICKS);
 
         admin.setGameMode(GameType.SPECTATOR);
 
@@ -149,8 +152,8 @@ public class SpectateManager {
                         admin.getName().getString());
             }
         }
+        lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
 
-        admin.setCamera(target);
         rollbackSpectatorAdvancements(admin);
 
         if (SpectateMod.getConfigManager().getConfig().isSaveSpectatePositions()) {
@@ -180,6 +183,7 @@ public class SpectateManager {
         rollbackSpectatorAdvancements(admin);
         advancementSnapshots.remove(adminUuid);
         cameraLockTicks.remove(adminUuid);
+        pendingCameraEntryTicks.remove(adminUuid);
         targetNameByAdmin.remove(adminUuid);
         pendingReconnectRestores.remove(adminUuid);
         pendingReconnectTargets.remove(adminUuid);
@@ -255,6 +259,7 @@ public class SpectateManager {
             rollbackSpectatorAdvancements(player);
             advancementSnapshots.remove(playerId);
             cameraLockTicks.remove(playerId);
+            pendingCameraEntryTicks.remove(playerId);
             lastAllowedPositions.remove(playerId);
             freecamExceedCounts.remove(playerId);
             freecamExceedWindows.remove(playerId);
@@ -297,6 +302,7 @@ public class SpectateManager {
             }
             advancementSnapshots.remove(adminId);
             cameraLockTicks.remove(adminId);
+            pendingCameraEntryTicks.remove(adminId);
             lastAllowedPositions.remove(adminId);
             freecamExceedCounts.remove(adminId);
             freecamExceedWindows.remove(adminId);
@@ -349,6 +355,7 @@ public class SpectateManager {
                 rollbackSpectatorAdvancements(player);
                 advancementSnapshots.remove(playerId);
                 cameraLockTicks.remove(playerId);
+                pendingCameraEntryTicks.remove(playerId);
                 lastAllowedPositions.remove(playerId);
                 freecamExceedCounts.remove(playerId);
                 freecamExceedWindows.remove(playerId);
@@ -444,39 +451,67 @@ public class SpectateManager {
             UUID adminId = admin.getUUID();
             if (admin.gameMode.getGameModeForPlayer() != GameType.SPECTATOR) {
                 cameraLockTicks.remove(adminId);
+                pendingCameraEntryTicks.remove(adminId);
                 continue;
             }
 
             rollbackSpectatorAdvancements(admin);
 
-            Integer lockTicksRemaining = cameraLockTicks.get(adminId);
-            if (lockTicksRemaining != null && lockTicksRemaining > 0) {
+            Integer cameraEntryTicksRemaining = pendingCameraEntryTicks.get(adminId);
+            boolean cameraEntryPending = cameraEntryTicksRemaining != null;
+            if (cameraEntryPending) {
                 ServerLevel targetWorld = (ServerLevel) target.level();
                 if (!admin.level().dimension().equals(targetWorld.dimension())) {
-                    if (!teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                    if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
                             admin.getYRot(), admin.getXRot(), false)) {
+                        lastAllowedPositions.put(adminId, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                    } else {
                         sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
-                        SpectateMod.LOGGER.warn("Failed to keep {} aligned with target dimension during camera lock",
+                        SpectateMod.LOGGER.warn("Failed to move {} into target dimension before camera entry",
                                 admin.getName().getString());
                     }
                 }
 
-                admin.setCamera(target);
-                int nextTicks = lockTicksRemaining - 1;
+                int nextTicks = cameraEntryTicksRemaining - 1;
                 if (nextTicks > 0) {
-                    cameraLockTicks.put(adminId, nextTicks);
+                    pendingCameraEntryTicks.put(adminId, nextTicks);
                 } else {
-                    cameraLockTicks.remove(adminId);
+                    pendingCameraEntryTicks.remove(adminId);
+                    admin.setCamera(target);
                 }
-                lastAllowedPositions.put(adminId, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
-                continue;
+            }
+
+            if (!cameraEntryPending) {
+                Integer lockTicksRemaining = cameraLockTicks.get(adminId);
+                if (lockTicksRemaining != null && lockTicksRemaining > 0) {
+                    ServerLevel targetWorld = (ServerLevel) target.level();
+                    if (!admin.level().dimension().equals(targetWorld.dimension())) {
+                        if (!teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
+                                admin.getYRot(), admin.getXRot(), false)) {
+                            sendPlayerMessage(admin, INTERNAL_ERROR_MESSAGE, false);
+                            SpectateMod.LOGGER.warn(
+                                    "Failed to keep {} aligned with target dimension during camera lock",
+                                    admin.getName().getString());
+                        }
+                    }
+
+                    admin.setCamera(target);
+                    int nextTicks = lockTicksRemaining - 1;
+                    if (nextTicks > 0) {
+                        cameraLockTicks.put(adminId, nextTicks);
+                    } else {
+                        cameraLockTicks.remove(adminId);
+                    }
+                    lastAllowedPositions.put(adminId, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
+                    continue;
+                }
             }
 
             if (!enforceDistanceLimit) {
                 continue;
             }
 
-            if (admin.getCamera() != target && admin.getCamera() != admin) {
+            if (!cameraEntryPending && admin.getCamera() != target && admin.getCamera() != admin) {
                 admin.setCamera(target);
                 warnCameraLimit(admin);
             }
@@ -507,7 +542,9 @@ public class SpectateManager {
             if (distSq > limitSq * 9) {
                 if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
                         admin.getYRot(), admin.getXRot(), false)) {
-                    admin.setCamera(target);
+                    if (!cameraEntryPending) {
+                        admin.setCamera(target);
+                    }
                     lastAllowedPositions.put(admin.getUUID(), new Vec3(admin.getX(), admin.getY(), admin.getZ()));
                     freecamExceedCounts.remove(admin.getUUID());
                     freecamExceedWindows.remove(admin.getUUID());
@@ -519,7 +556,9 @@ public class SpectateManager {
             if (registerExceedAttempt(admin)) {
                 if (teleportPlayer(admin, targetWorld, target.getX(), target.getY(), target.getZ(),
                         admin.getYRot(), admin.getXRot(), false)) {
-                    admin.setCamera(target);
+                    if (!cameraEntryPending) {
+                        admin.setCamera(target);
+                    }
                     lastAllowedPositions.put(admin.getUUID(), new Vec3(admin.getX(), admin.getY(), admin.getZ()));
                     freecamExceedCounts.remove(admin.getUUID());
                     freecamExceedWindows.remove(admin.getUUID());
@@ -778,6 +817,7 @@ public class SpectateManager {
             freecamExceedCounts.remove(playerId);
             freecamExceedWindows.remove(playerId);
             cameraLockTicks.put(playerId, INITIAL_CAMERA_LOCK_TICKS);
+            pendingCameraEntryTicks.put(playerId, CAMERA_ENTRY_DELAY_TICKS);
 
             player.setGameMode(GameType.SPECTATOR);
 
@@ -789,8 +829,8 @@ public class SpectateManager {
                             player.getName().getString());
                 }
             }
+            lastAllowedPositions.put(playerId, new Vec3(player.getX(), player.getY(), player.getZ()));
 
-            player.setCamera(target);
             rollbackSpectatorAdvancements(player);
 
             sendPlayerMessage(player,
@@ -803,6 +843,8 @@ public class SpectateManager {
                     player.getName().getString(), target.getName().getString());
         } else {
             // Target is offline: fall back to ending spectation and teleporting back.
+            cameraLockTicks.remove(playerId);
+            pendingCameraEntryTicks.remove(playerId);
             player.setCamera(player);
 
             ServerLevel originalWorld = server.getLevel(restoreState.getDimension());
