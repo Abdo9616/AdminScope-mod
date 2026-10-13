@@ -24,12 +24,15 @@ Key Features
 ------------
 
 *   **Direct spectate command**: `/spectate <player>` immediately switches you to the target player's POV.
+*   **Quick POV reset**: Use `/spectate pov` or click the return-to-POV hint to get back to the target player's view from freecam.
 *   **Accurate restore**: Position, gamemode, and dimension are restored when spectate ends.
 *   **Freecam distance limit**: Configurable boundary (default 30 blocks) with automatic snap-back and warnings.
 *   **Cooldown**: Configurable cooldown between spectate sessions (default 30 seconds).
 *   **Combat safety**: Optional block when in combat or near hostile mobs.
 *   **Player-only POV**: Camera is forced back to the target player if it switches to mobs or other entities.
 *   **Disconnect handling**: Spectating ends automatically if the target leaves the server.
+*   **Permission revocation handling**: An active session ends and restores the spectator if they lose permission.
+*   **Spectate chain handling**: You cannot target someone already spectating; if someone you are watching starts a session, your session ends first.
 *   **Jail Mod compatibility**: Jailed players cannot spectate.
 *   **Crash recovery**: Spectate sessions are persisted to disk.
 *   **Auto-patching config**: New config fields are added automatically on update.
@@ -40,8 +43,9 @@ How to use:
 1.  Install the mod and Fabric API on the server.
 2.  Start the server once to generate configuration files.
 3.  Run `/spectate <player>` to start spectating.
-4.  Use `/spectate stop` to return to your saved position.
-5.  Use `/spectate reload` after editing the config.
+4.  Use `/spectate pov` or the clickable POV hint to return to the target's POV from freecam.
+5.  Use `/spectate stop` to return to your saved position, or click the stop hint in chat.
+6.  Use `/spectate reload` after editing the config.
 
 Requirements
 ------------
@@ -63,28 +67,35 @@ Download
 The mod is available on:
 * **Modrinth**: https://modrinth.com/project/W8fUtxyA
 * **CurseForge**: https://www.curseforge.com/minecraft/mc-mods/adminscope
+* **GitHub**: https://github.com/Abdo9616/AdminScope-mod
 
 
 Available Commands
 ------------------
 
-### 1. `/spectate player`
+### 1. `/spectate <player>`
 
 *   **Description**: Spectate a specific player immediately.
-*   **Who can use it**: Only admins or server operators.
-*   **Syntax**: `/spectate player_name`
+*   **Who can use it**: Server operators and players with a role/tag listed in `admin_roles`.
+*   **Syntax**: `/spectate <player_name>`
 *   **Example**: `/spectate Steve`
 
 ### 2. `/spectate stop`
 
 *   **Description**: Stop spectating and return to your original position.
-*   **Who can use it**: Only admins or server operators.
+*   **Who can use it**: Server operators and players with a role/tag listed in `admin_roles`.
 *   **Example**: `/spectate stop`
 
-### 3. `/spectate reload`
+### 3. `/spectate pov`
+
+*   **Description**: Return to the target player's POV while in freecam. The same action is available through the clickable hint shown when a session starts.
+*   **Who can use it**: Authorized players with an active spectate session.
+*   **Example**: `/spectate pov`
+
+### 4. `/spectate reload`
 
 *   **Description**: Reloads the configuration without restarting the server.
-*   **Who can use it**: Only admins or server operators.
+*   **Who can use it**: Server operators and players with a role/tag listed in `admin_roles`.
 *   **Example**: `/spectate reload`
 
 Spectate Rules
@@ -96,6 +107,9 @@ While spectating, the following rules apply:
 *   Freecam distance is limited by `freecam_distance_limit`.
 *   If you push the limit repeatedly, you are snapped back to the target POV.
 *   If the target leaves the server, spectating ends automatically.
+*   If you lose permission to use spectating, your session ends and your saved state is restored.
+*   A player already in a spectate session cannot be selected as a target.
+*   If someone you are spectating starts a spectate session, your session ends before theirs starts.
 
 Jail Mod Compatibility
 ----------------------
