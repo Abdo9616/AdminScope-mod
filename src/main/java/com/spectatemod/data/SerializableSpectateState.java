@@ -25,14 +25,16 @@ public class SerializableSpectateState {
     private String dimension;
     @SerializedName("start_time")
     private long startTime;
+    @SerializedName("resume_cancelled")
+    private boolean resumeCancelled;
 
     public SerializableSpectateState() {
     }
 
     public SerializableSpectateState(String adminUuid, String targetUuid, String targetName,
             double positionX, double positionY, double positionZ,
-            float yaw, float pitch,
-            String gameMode, String dimension, long startTime) {
+            float yaw, float pitch, String gameMode, String dimension, long startTime,
+            boolean resumeCancelled) {
         this.adminUuid = adminUuid;
         this.targetUuid = targetUuid;
         this.targetName = targetName;
@@ -44,6 +46,7 @@ public class SerializableSpectateState {
         this.gameMode = gameMode;
         this.dimension = dimension;
         this.startTime = startTime;
+        this.resumeCancelled = resumeCancelled;
     }
 
     public String getAdminUuid() {
@@ -88,5 +91,9 @@ public class SerializableSpectateState {
 
     public long getStartTime() {
         return startTime;
+    }
+
+    public boolean isResumeCancelled() {
+        return resumeCancelled;
     }
 }

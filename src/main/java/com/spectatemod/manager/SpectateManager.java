@@ -71,6 +71,7 @@ public class SpectateManager {
     private final Map<UUID, Integer> pendingCameraEntryTicks = new ConcurrentHashMap<>();
     private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
     private final Map<UUID, SpectateState> pendingReconnectRestores = new ConcurrentHashMap<>();
+    private final Set<UUID> cancelledReconnectResumes = ConcurrentHashMap.newKeySet();
     private final Map<UUID, String> pendingReconnectTargets = new ConcurrentHashMap<>();
     private final Map<UUID, Long> pendingReconnectCancelAt = new ConcurrentHashMap<>();
     private final Map<UUID, String> targetNameByAdmin = new ConcurrentHashMap<>();
@@ -138,12 +139,18 @@ public class SpectateManager {
             return;
         }
 
+        MinecraftServer server = admin.level().getServer();
+        if (server != null) {
+            endSessionsWatching(admin, server);
+        }
+
         SpectateState state = new SpectateState(admin, target);
         UUID adminUuid = admin.getUUID();
         advancementSnapshots.put(adminUuid, snapshotCompletedAdvancements(admin));
         activeSpectators.put(adminUuid, state);
         targetNameByAdmin.put(adminUuid, target.getName().getString());
         pendingReconnectRestores.remove(adminUuid);
+        cancelledReconnectResumes.remove(adminUuid);
         pendingReconnectTargets.remove(adminUuid);
         pendingReconnectCancelAt.remove(adminUuid);
         lastAllowedPositions.put(adminUuid, new Vec3(admin.getX(), admin.getY(), admin.getZ()));
@@ -241,6 +248,7 @@ public class SpectateManager {
         pendingCameraEntryTicks.remove(adminUuid);
         targetNameByAdmin.remove(adminUuid);
         pendingReconnectRestores.remove(adminUuid);
+        cancelledReconnectResumes.remove(adminUuid);
         pendingReconnectTargets.remove(adminUuid);
         pendingReconnectCancelAt.remove(adminUuid);
         SpectateState state = activeSpectators.remove(adminUuid);
@@ -426,8 +434,8 @@ public class SpectateManager {
             return;
         }
 
-        if (!SpectatePermissions.hasPermission(player)) {
-            // A revoked permission ends the saved session instead of resuming it.
+        if (!SpectatePermissions.hasPermission(player) || cancelledReconnectResumes.contains(playerId)) {
+            // A revoked permission or a target's new session ends the saved session instead of resuming it.
             finalizeReconnectCleanup(player, server);
             return;
         }
@@ -472,7 +480,8 @@ public class SpectateManager {
             } else {
                 ServerPlayer player = server.getPlayerList().getPlayer(playerId);
                 if (player != null && pendingReconnectRestores.containsKey(playerId)) {
-                    if (SpectatePermissions.hasPermission(player)) {
+                    if (SpectatePermissions.hasPermission(player)
+                            && !cancelledReconnectResumes.contains(playerId)) {
                         ensureSpectatorMode(player);
                     } else {
                         duePlayers.add(playerId);
@@ -859,6 +868,49 @@ public class SpectateManager {
         targetNameByAdmin.put(playerId, safeTargetName);
     }
 
+    private void endSessionsWatching(ServerPlayer watchedPlayer, MinecraftServer server) {
+        UUID watchedPlayerId = watchedPlayer.getUUID();
+        String reason = "§cSpectating ended: your target started spectating another player.";
+
+        List<UUID> activeWatchers = new ArrayList<>();
+        for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
+            if (entry.getValue().getTargetUuid().equals(watchedPlayerId)) {
+                activeWatchers.add(entry.getKey());
+            }
+        }
+
+        for (UUID watcherId : activeWatchers) {
+            ServerPlayer watcher = server.getPlayerList().getPlayer(watcherId);
+            if (watcher != null) {
+                stopSpectating(watcher, reason);
+            }
+        }
+
+        List<UUID> reconnectingWatchers = new ArrayList<>();
+        for (Map.Entry<UUID, SpectateState> entry : pendingReconnectRestores.entrySet()) {
+            if (entry.getValue().getTargetUuid().equals(watchedPlayerId)) {
+                reconnectingWatchers.add(entry.getKey());
+            }
+        }
+
+        for (UUID watcherId : reconnectingWatchers) {
+            if (!pendingReconnectRestores.containsKey(watcherId)) {
+                continue;
+            }
+
+            cancelledReconnectResumes.add(watcherId);
+            ServerPlayer watcher = server.getPlayerList().getPlayer(watcherId);
+            if (watcher != null) {
+                finalizeReconnectCleanup(watcher, server);
+            }
+        }
+
+        if (!activeWatchers.isEmpty() || !reconnectingWatchers.isEmpty()) {
+            // Persist the ended sessions so a server restart cannot revive an old spectator chain.
+            saveSpectateData();
+        }
+    }
+
     private void finalizeReconnectCleanup(ServerPlayer player, MinecraftServer server) {
         if (player == null || server == null) {
             return;
@@ -868,6 +920,7 @@ public class SpectateManager {
         SpectateState restoreState = pendingReconnectRestores.remove(playerId);
         String targetName = pendingReconnectTargets.remove(playerId);
         pendingReconnectCancelAt.remove(playerId);
+        boolean resumeCancelled = cancelledReconnectResumes.remove(playerId);
 
         if (restoreState == null) {
             return;
@@ -880,7 +933,7 @@ public class SpectateManager {
                 : targetName;
 
         boolean hasPermission = SpectatePermissions.hasPermission(player);
-        if (target != null && hasPermission) {
+        if (target != null && hasPermission && !resumeCancelled) {
             // Resume spectating: keep original position in state for later /spectate stop.
             advancementSnapshots.put(playerId, snapshotCompletedAdvancements(player));
             activeSpectators.put(playerId, restoreState);
@@ -914,7 +967,7 @@ public class SpectateManager {
             SpectateMod.LOGGER.info("{} resumed spectating {} after reconnect",
                     player.getName().getString(), target.getName().getString());
         } else {
-            // If the target is offline or permission was revoked, end spectating and restore the player.
+            // If the target is offline, permission was revoked, or resuming was cancelled, restore the player.
             cameraLockTicks.remove(playerId);
             pendingCameraEntryTicks.remove(playerId);
             player.setCamera(player);
@@ -938,7 +991,9 @@ public class SpectateManager {
             ensureSpectateCooldown(playerId);
 
             String reason = hasPermission
-                    ? "§eSpectate session ended: §c" + targetLabel + "§e is no longer online."
+                    ? (resumeCancelled
+                            ? "§cSpectate session ended: your target started spectating another player."
+                            : "§eSpectate session ended: §c" + targetLabel + "§e is no longer online.")
                     : "§cSpectate session ended: you no longer have permission to use this feature.";
             sendPlayerMessage(player, Component.literal(reason), false);
             sendPlayerMessage(player,
@@ -1091,7 +1146,8 @@ public class SpectateManager {
                         state.getPitch(),
                         gameType.name(),
                         state.getDimensionId(),
-                        state.getStartTime());
+                        state.getStartTime(),
+                        cancelledReconnectResumes.contains(adminUuid));
                 serializableStates.add(serializable);
             }
 
@@ -1124,6 +1180,7 @@ public class SpectateManager {
 
             activeSpectators.clear();
             pendingReconnectRestores.clear();
+            cancelledReconnectResumes.clear();
             pendingReconnectTargets.clear();
             pendingReconnectCancelAt.clear();
             targetNameByAdmin.clear();
@@ -1148,6 +1205,9 @@ public class SpectateManager {
                     }
 
                     queueReconnectCleanup(adminUuid, state, targetName);
+                    if (serializable.isResumeCancelled()) {
+                        cancelledReconnectResumes.add(adminUuid);
+                    }
                 } catch (Exception e) {
                     SpectateMod.LOGGER.warn("Failed to restore a spectate state entry; skipping", e);
                 }
