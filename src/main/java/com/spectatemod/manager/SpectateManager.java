@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import com.spectatemod.SpectateMod;
+import com.spectatemod.command.SpectatePermissions;
 import com.spectatemod.data.SerializableSpectateState;
 import com.spectatemod.data.SpectateState;
 import net.minecraft.ChatFormatting;
@@ -98,6 +99,13 @@ public class SpectateManager {
         if (isSpectating(adminUuid)) {
             sendPlayerMessage(admin,
                     Component.literal("§cYou are already spectating someone! Use /spectate stop first."), false);
+            return false;
+        }
+
+        if (activeSpectators.containsKey(targetUuid) || pendingReconnectRestores.containsKey(targetUuid)) {
+            sendPlayerMessage(admin,
+                    Component.literal("§cYou cannot spectate someone who is already spectating another player!"),
+                    false);
             return false;
         }
 
@@ -418,6 +426,12 @@ public class SpectateManager {
             return;
         }
 
+        if (!SpectatePermissions.hasPermission(player)) {
+            // A revoked permission ends the saved session instead of resuming it.
+            finalizeReconnectCleanup(player, server);
+            return;
+        }
+
         // Keep the reconnecting admin safe during the delay before the session is resumed
         // or ended. Other login handlers can also change the player's game mode afterward.
         ensureSpectatorMode(player);
@@ -458,7 +472,11 @@ public class SpectateManager {
             } else {
                 ServerPlayer player = server.getPlayerList().getPlayer(playerId);
                 if (player != null && pendingReconnectRestores.containsKey(playerId)) {
-                    ensureSpectatorMode(player);
+                    if (SpectatePermissions.hasPermission(player)) {
+                        ensureSpectatorMode(player);
+                    } else {
+                        duePlayers.add(playerId);
+                    }
                 }
             }
         }
@@ -485,6 +503,12 @@ public class SpectateManager {
         for (Map.Entry<UUID, SpectateState> entry : activeSpectators.entrySet()) {
             ServerPlayer admin = server.getPlayerList().getPlayer(entry.getKey());
             if (admin == null) {
+                continue;
+            }
+
+            if (!SpectatePermissions.hasPermission(admin)) {
+                stopSpectating(admin,
+                        "§cSpectating ended: you no longer have permission to use this feature.");
                 continue;
             }
 
@@ -855,7 +879,8 @@ public class SpectateManager {
                 ? resolveBestTargetName(playerId, server, restoreState.getTargetUuid())
                 : targetName;
 
-        if (target != null) {
+        boolean hasPermission = SpectatePermissions.hasPermission(player);
+        if (target != null && hasPermission) {
             // Resume spectating: keep original position in state for later /spectate stop.
             advancementSnapshots.put(playerId, snapshotCompletedAdvancements(player));
             activeSpectators.put(playerId, restoreState);
@@ -889,7 +914,7 @@ public class SpectateManager {
             SpectateMod.LOGGER.info("{} resumed spectating {} after reconnect",
                     player.getName().getString(), target.getName().getString());
         } else {
-            // Target is offline: fall back to ending spectation and teleporting back.
+            // If the target is offline or permission was revoked, end spectating and restore the player.
             cameraLockTicks.remove(playerId);
             pendingCameraEntryTicks.remove(playerId);
             player.setCamera(player);
@@ -912,9 +937,10 @@ public class SpectateManager {
             player.setGameMode(restoreMode);
             ensureSpectateCooldown(playerId);
 
-            sendPlayerMessage(player,
-                    Component.literal("§eSpectate session ended: §c" + targetLabel + "§e is no longer online."),
-                    false);
+            String reason = hasPermission
+                    ? "§eSpectate session ended: §c" + targetLabel + "§e is no longer online."
+                    : "§cSpectate session ended: you no longer have permission to use this feature.";
+            sendPlayerMessage(player, Component.literal(reason), false);
             sendPlayerMessage(player,
                     Component.literal("§7Use §e/spectate <player> §7if you want to spectate someone else."),
                     false);
