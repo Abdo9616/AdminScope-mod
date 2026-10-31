@@ -63,10 +63,15 @@ jobs:
             exit 1
           fi
 
-          dependencies=""
+          dependencies=$(cat <<'EOF'
+          cloth-config@*(optional){modrinth:9s6osm5g}{curseforge:348521}
+          EOF
+          )
           if [[ "$loader" == "fabric" ]]; then
-            dependencies=$(cat <<'EOF'
+            dependencies=$(cat <<EOF
           fabric-api@*(required){modrinth:P7dR8mSH}{curseforge:306612}
+          modmenu@*(optional){modrinth:mOgUt4GM}{curseforge:308702}
+          ${dependencies}
           EOF
             )
           fi
@@ -78,7 +83,7 @@ jobs:
             echo "minecraft=${minecraft_version}"
             echo "module_dir=${loader}"
             echo "java_version=17"
-            echo "version_type=beta"
+            echo "version_type=alpha"
             echo "name<<RELEASE_NAME"
             printf '%s\n' "${RELEASE_NAME}"
             echo "RELEASE_NAME"
