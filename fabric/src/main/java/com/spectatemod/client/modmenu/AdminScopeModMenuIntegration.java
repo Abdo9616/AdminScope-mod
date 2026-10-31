@@ -27,7 +27,7 @@ public final class AdminScopeModMenuIntegration implements ModMenuApi {
                 SpectateMod.LOGGER.error("Failed to create AdminScope config screen", error);
                 String summary = error.getClass().getSimpleName();
                 if (error.getMessage() != null && !error.getMessage().isBlank()) {
-                    summary = summary + ": " + error.getMessage();
+                    summary += ": " + error.getMessage();
                 }
                 return infoScreen(parent, Component.literal("Could not open config screen. " + summary));
             }
@@ -41,7 +41,7 @@ public final class AdminScopeModMenuIntegration implements ModMenuApi {
 
     private static Screen infoScreen(Screen parent, Component message) {
         return new ConfirmScreen(
-                accepted -> Minecraft.getInstance().setScreenAndShow(parent),
+                accepted -> Minecraft.getInstance().setScreen(parent),
                 TITLE,
                 message,
                 BACK_BUTTON,

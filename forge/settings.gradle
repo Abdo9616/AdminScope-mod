@@ -1,0 +1,9 @@
+pluginManagement {
+    repositories {
+        maven { name = 'Forge'; url = 'https://maven.minecraftforge.net/' }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'AdminScope-Forge'

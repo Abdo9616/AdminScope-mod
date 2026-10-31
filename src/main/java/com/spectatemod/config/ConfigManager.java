@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.spectatemod.PlatformHooks;
 import com.spectatemod.SpectateMod;
 
 import java.io.File;
@@ -12,10 +13,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 public class ConfigManager {
-    private static final String CONFIG_DIR = "config/spectatemod";
     private static final String CONFIG_FILE = "config.json";
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private ModConfig config;
@@ -26,13 +25,13 @@ public class ConfigManager {
 
     public void loadConfig() {
         try {
-            Path configPath = Paths.get(CONFIG_DIR);
+            Path configPath = PlatformHooks.configDirectory();
             if (!Files.exists(configPath)) {
                 Files.createDirectories(configPath);
-                SpectateMod.LOGGER.info("Created config directory: {}", CONFIG_DIR);
+                SpectateMod.LOGGER.info("Created config directory: {}", configPath);
             }
 
-            File configFile = new File(CONFIG_DIR, CONFIG_FILE);
+            File configFile = configPath.resolve(CONFIG_FILE).toFile();
 
             if (!configFile.exists()) {
                 saveConfig();
@@ -80,12 +79,12 @@ public class ConfigManager {
 
     public void saveConfig() {
         try {
-            Path configPath = Paths.get(CONFIG_DIR);
+            Path configPath = PlatformHooks.configDirectory();
             if (!Files.exists(configPath)) {
                 Files.createDirectories(configPath);
             }
 
-            File configFile = new File(CONFIG_DIR, CONFIG_FILE);
+            File configFile = configPath.resolve(CONFIG_FILE).toFile();
             try (FileWriter writer = new FileWriter(configFile)) {
                 gson.toJson(config, writer);
                 SpectateMod.LOGGER.info("Config saved successfully");

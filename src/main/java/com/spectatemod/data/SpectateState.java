@@ -73,7 +73,7 @@ public class SpectateState {
         if (dimension == null) {
             return "minecraft:overworld";
         }
-        return dimension.identifier().toString();
+        return dimension.location().toString();
     }
 
     public long getStartTime() {

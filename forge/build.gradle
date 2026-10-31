@@ -1,0 +1,95 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '6.0.54'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+def artifactVersion = "${project.mod_version}+forge-${project.minecraft_version}"
+
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
+    archiveBaseName = project.archives_base_name
+    archiveVersion = artifactVersion
+}
+
+processResources {
+    inputs.property 'mod_version', artifactVersion
+    filesMatching('META-INF/mods.toml') {
+        expand version: artifactVersion
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.shedaniel.me/' }
+    mavenCentral()
+}
+
+minecraft {
+    mappings channel: 'official', version: project.minecraft_version
+    copyIdeResources = true
+
+    runs {
+        client {
+            workingDirectory project.file('../run-forge')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                adminscope {
+                    source sourceSets.main
+                }
+            }
+        }
+        server {
+            workingDirectory project.file('../run-forge')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                adminscope {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
+    implementation fg.deobf("me.shedaniel.cloth:cloth-config-forge:${project.cloth_config_version}")
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ['../src/main/java', 'src/main/java']
+        resources.srcDirs = ['src/main/resources', '../src/main/resources']
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+    withSourcesJar()
+}
+
+jar {
+    finalizedBy 'reobfJar'
+    from('../LICENSE') {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+}
+
+publishing {
+    publications {
+        register('mavenForge', MavenPublication) {
+            artifact jar
+        }
+    }
+}

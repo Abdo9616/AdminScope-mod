@@ -1,0 +1,35 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://github.com/Abdo9616/AdminScope-mod/issues"
+
+[[mods]]
+modId="adminscope"
+version="${version}"
+displayName="AdminScope"
+displayURL="https://modrinth.com/project/W8fUtxyA"
+authors="Abdo9616"
+logoFile="assets/adminscope/icon.png"
+credits="Built for server moderation and safe player spectating."
+description='''A server-side moderation tool that allows authorized admins to spectate players.'''
+
+[[dependencies.adminscope]]
+modId="forge"
+mandatory=true
+versionRange="[47.3,48)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.adminscope]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.adminscope]]
+modId="cloth_config"
+mandatory=false
+versionRange="[11.1,12)"
+ordering="AFTER"
+side="CLIENT"

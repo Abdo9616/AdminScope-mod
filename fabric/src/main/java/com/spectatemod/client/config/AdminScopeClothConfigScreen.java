@@ -29,8 +29,7 @@ public final class AdminScopeClothConfigScreen {
             config = new ModConfig();
         }
 
-        String initialRoles = String.join(", ", config.getAdminRoles());
-        String[] adminRoles = {initialRoles};
+        String[] adminRoles = {String.join(", ", config.getAdminRoles())};
         int[] cooldownSeconds = {config.getSpectateCooldown()};
         boolean[] preventCombatSpectate = {config.isPreventCombatSpectate()};
         double[] combatRadius = {config.getCombatCheckRadius()};
@@ -105,8 +104,7 @@ public final class AdminScopeClothConfigScreen {
             return roles;
         }
 
-        String[] split = value.split(",");
-        for (String role : split) {
+        for (String role : value.split(",")) {
             String trimmed = role.trim();
             if (!trimmed.isEmpty()) {
                 roles.add(trimmed);

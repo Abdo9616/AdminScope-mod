@@ -3,7 +3,6 @@ package com.spectatemod.command;
 import com.spectatemod.SpectateMod;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.permissions.Permissions;
 
 import java.util.List;
 import java.util.Set;
@@ -23,12 +22,12 @@ public final class SpectatePermissions {
             return false;
         }
 
-        if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
+        if (source.hasPermission(2)) {
             return true;
         }
 
         List<String> adminRoles = SpectateMod.getConfigManager().getConfig().getAdminRoles();
-        Set<String> tags = player.entityTags();
+        Set<String> tags = player.getTags();
         for (String role : adminRoles) {
             String trimmedRole = role.trim();
             if (trimmedRole.isEmpty()) {

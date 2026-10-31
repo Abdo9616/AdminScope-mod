@@ -1,6 +1,6 @@
 <img src="src\main\resources\assets\adminscope\icon.png" alt="AdminScope" width=128 height=128/>
 
-AdminScope Mod (Fabric)
+AdminScope Mod (Fabric/Forge)
 ============================
 
 [![Get it on Modrinth](https://img.shields.io/badge/Get%20it%20on-Modrinth-black?style=for-the-badge&logo=modrinth&logoColor=00AF5C)](https://modrinth.com/project/W8fUtxyA)
@@ -40,7 +40,7 @@ Key Features
 How to use:
 -----------
 
-1.  Install the mod and Fabric API on the server.
+1.  Install the loader-specific mod jar and its loader API on the server.
 2.  Start the server once to generate configuration files.
 3.  Run `/spectate <player>` to start spectating.
 4.  Use `/spectate pov` or the clickable POV hint to return to the target's POV from freecam.
@@ -50,16 +50,29 @@ How to use:
 Requirements
 ------------
 
-*   Minecraft 26.3
-*   Fabric Loader
-*   Fabric API
-*   Java 25
+*   Minecraft 1.20.1
+*   Fabric Loader + Fabric API, or Forge 47.4.x
+*   Java 17 or newer (Java 17 is recommended for 1.20.1)
 
 Installation
 ------------
 
-1.  Place the mod's `.jar` file in the server `mods` folder.
+1.  Place the matching jar from `fabric/build/libs` or `forge/build/libs` in the server `mods` folder.
 2.  Start the server to generate configuration files.
+
+The release jars use the format
+`AdminScope-<version>+<modloader>-1.20.1.jar`, for example
+`AdminScope-0.7.3-Alpha+fabric-1.20.1.jar` or
+`AdminScope-0.7.3-Alpha+forge-1.20.1.jar`.
+
+For the client configuration screen, install Mod Menu and Cloth Config on
+Fabric, or Cloth Config Forge on Forge. The screen is available from the
+loader's Mods menu.
+
+The Fabric and Forge projects are independent. Build from either platform folder
+with `gradlew build`, or use the root `gradlew buildAll` task. Shared gameplay
+code is kept in the root `src/main/java`; loader-specific entrypoints and
+integrations live under `fabric/` and `forge/`.
 
 Download
 ----------

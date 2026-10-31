@@ -3,19 +3,19 @@ package com.spectatemod.manager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import com.spectatemod.PlatformHooks;
 import com.spectatemod.SpectateMod;
 import com.spectatemod.command.SpectatePermissions;
 import com.spectatemod.data.SerializableSpectateState;
 import com.spectatemod.data.SpectateState;
 import net.minecraft.ChatFormatting;
-import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.Advancement;
 import net.minecraft.advancements.AdvancementProgress;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
@@ -23,7 +23,7 @@ import net.minecraft.server.ServerAdvancementManager;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.Relative;
+import net.minecraft.world.entity.RelativeMovement;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
@@ -38,7 +38,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -50,7 +49,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class SpectateManager {
-    private static final String DATA_DIR = "config/spectatemod";
     private static final String DATA_FILE = "spectate_data.json";
     private static final Component INTERNAL_ERROR_MESSAGE =
             Component.literal("§cAn internal error occurred while executing the command.");
@@ -69,7 +67,7 @@ public class SpectateManager {
     private final Map<UUID, Long> cameraWarnings = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> cameraLockTicks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> pendingCameraEntryTicks = new ConcurrentHashMap<>();
-    private final Map<UUID, Set<Identifier>> advancementSnapshots = new ConcurrentHashMap<>();
+    private final Map<UUID, Set<ResourceLocation>> advancementSnapshots = new ConcurrentHashMap<>();
     private final Map<UUID, SpectateState> pendingReconnectRestores = new ConcurrentHashMap<>();
     private final Set<UUID> cancelledReconnectResumes = ConcurrentHashMap.newKeySet();
     private final Map<UUID, String> pendingReconnectTargets = new ConcurrentHashMap<>();
@@ -678,8 +676,8 @@ public class SpectateManager {
         }
     }
 
-    private Set<Identifier> snapshotCompletedAdvancements(ServerPlayer player) {
-        Set<Identifier> completed = new HashSet<>();
+    private Set<ResourceLocation> snapshotCompletedAdvancements(ServerPlayer player) {
+        Set<ResourceLocation> completed = new HashSet<>();
         if (player == null) {
             return completed;
         }
@@ -696,13 +694,13 @@ public class SpectateManager {
                 return completed;
             }
 
-            for (AdvancementHolder holder : advancementManager.getAllAdvancements()) {
-                if (holder == null) {
+            for (Advancement advancement : advancementManager.getAllAdvancements()) {
+                if (advancement == null) {
                     continue;
                 }
-                AdvancementProgress progress = playerAdvancements.getOrStartProgress(holder);
+                AdvancementProgress progress = playerAdvancements.getOrStartProgress(advancement);
                 if (progress != null && progress.isDone()) {
-                    completed.add(holder.id());
+                    completed.add(advancement.getId());
                 }
             }
         } catch (Exception e) {
@@ -718,7 +716,7 @@ public class SpectateManager {
         }
 
         UUID playerId = player.getUUID();
-        Set<Identifier> snapshot = advancementSnapshots.get(playerId);
+        Set<ResourceLocation> snapshot = advancementSnapshots.get(playerId);
         if (snapshot == null) {
             advancementSnapshots.put(playerId, snapshotCompletedAdvancements(player));
             return;
@@ -738,12 +736,12 @@ public class SpectateManager {
 
             int revokedCriteria = 0;
             int revokedAdvancements = 0;
-            for (AdvancementHolder holder : advancementManager.getAllAdvancements()) {
-                if (holder == null || snapshot.contains(holder.id())) {
+            for (Advancement advancement : advancementManager.getAllAdvancements()) {
+                if (advancement == null || snapshot.contains(advancement.getId())) {
                     continue;
                 }
 
-                AdvancementProgress progress = playerAdvancements.getOrStartProgress(holder);
+                AdvancementProgress progress = playerAdvancements.getOrStartProgress(advancement);
                 if (progress == null || !progress.isDone()) {
                     continue;
                 }
@@ -759,7 +757,7 @@ public class SpectateManager {
                 boolean revokedAny = false;
                 for (String criterion : completedCriteria) {
                     try {
-                        if (playerAdvancements.revoke(holder, criterion)) {
+                        if (playerAdvancements.revoke(advancement, criterion)) {
                             revokedAny = true;
                             revokedCriteria++;
                         }
@@ -1019,8 +1017,8 @@ public class SpectateManager {
                 .withStyle(style -> style
                         .withColor(ChatFormatting.AQUA)
                         .withUnderlined(true)
-                        .withClickEvent(new ClickEvent.RunCommand("/spectate pov"))
-                        .withHoverEvent(new HoverEvent.ShowText(
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/spectate pov"))
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                                 Component.literal("Return to the player you are spectating."))));
         sendPlayerMessage(player,
                 Component.literal("§7In freecam? Click ")
@@ -1034,8 +1032,8 @@ public class SpectateManager {
                 .withStyle(style -> style
                         .withColor(ChatFormatting.YELLOW)
                         .withUnderlined(true)
-                        .withClickEvent(new ClickEvent.RunCommand("/spectate stop"))
-                        .withHoverEvent(new HoverEvent.ShowText(
+                        .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/spectate stop"))
+                        .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                                 Component.literal("Stop spectating and return to your saved position."))));
         sendPlayerMessage(player,
                 Component.literal("§7Use ")
@@ -1119,7 +1117,7 @@ public class SpectateManager {
 
     public void saveSpectateData() {
         try {
-            Path dataPath = Paths.get(DATA_DIR);
+            Path dataPath = PlatformHooks.configDirectory();
             if (!Files.exists(dataPath)) {
                 Files.createDirectories(dataPath);
             }
@@ -1151,7 +1149,7 @@ public class SpectateManager {
                 serializableStates.add(serializable);
             }
 
-            File dataFile = new File(DATA_DIR, DATA_FILE);
+            File dataFile = dataPath.resolve(DATA_FILE).toFile();
             try (FileWriter writer = new FileWriter(dataFile)) {
                 gson.toJson(serializableStates, writer);
             }
@@ -1165,7 +1163,7 @@ public class SpectateManager {
     }
 
     public void loadSpectateData(MinecraftServer server) {
-        File dataFile = new File(DATA_DIR, DATA_FILE);
+        File dataFile = PlatformHooks.configDirectory().resolve(DATA_FILE).toFile();
         if (!dataFile.exists()) {
             return;
         }
@@ -1249,7 +1247,7 @@ public class SpectateManager {
 
     private ResourceKey<Level> parseDimensionKey(String serializedDimension, MinecraftServer server) {
         if (serializedDimension != null) {
-            Identifier dimensionId = Identifier.tryParse(serializedDimension.trim());
+            ResourceLocation dimensionId = ResourceLocation.tryParse(serializedDimension.trim());
             if (dimensionId != null) {
                 return ResourceKey.create(Registries.DIMENSION, dimensionId);
             }
@@ -1262,7 +1260,7 @@ public class SpectateManager {
             if (sanitized.contains(" / ")) {
                 sanitized = sanitized.substring(sanitized.indexOf(" / ") + 3);
             }
-            Identifier legacyId = Identifier.tryParse(sanitized);
+            ResourceLocation legacyId = ResourceLocation.tryParse(sanitized);
             if (legacyId != null) {
                 SpectateMod.LOGGER.warn("Recovered legacy dimension format '{}' as '{}'", serializedDimension,
                         legacyId);
@@ -1289,7 +1287,7 @@ public class SpectateManager {
         }
 
         try {
-            return player.teleportTo(world, x, y, z, EnumSet.noneOf(Relative.class), yaw, pitch, moveCamera);
+            return player.teleportTo(world, x, y, z, EnumSet.noneOf(RelativeMovement.class), yaw, pitch);
         } catch (Throwable primaryFailure) {
             SpectateMod.LOGGER.warn("Primary teleport API failed for {}", player.getName().getString(),
                     primaryFailure);
@@ -1303,20 +1301,19 @@ public class SpectateManager {
                 }
 
                 Class<?>[] params = method.getParameterTypes();
-                if (params.length != 8
+                if (params.length != 7
                         || !params[0].isAssignableFrom(world.getClass())
                         || params[1] != double.class
                         || params[2] != double.class
                         || params[3] != double.class
                         || !Set.class.isAssignableFrom(params[4])
                         || params[5] != float.class
-                        || params[6] != float.class
-                        || params[7] != boolean.class) {
+                        || params[6] != float.class) {
                     continue;
                 }
 
                 Object result = method.invoke(player, world, x, y, z,
-                        EnumSet.noneOf(Relative.class), yaw, pitch, moveCamera);
+                        EnumSet.noneOf(RelativeMovement.class), yaw, pitch);
                 if (result instanceof Boolean value) {
                     return value;
                 }
@@ -1380,7 +1377,7 @@ public class SpectateManager {
         private static Method isPlayerInJail;
 
         private static boolean isPlayerJailed(ServerPlayer player) {
-            if (player == null || !FabricLoader.getInstance().isModLoaded("jailmod")) {
+            if (player == null || !PlatformHooks.isModLoaded("jailmod")) {
                 return false;
             }
 

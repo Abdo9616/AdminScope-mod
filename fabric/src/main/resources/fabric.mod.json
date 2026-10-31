@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "adminscope",
+  "version": "${version}",
+  "name": "AdminScope",
+  "description": "A server-side moderation tool that allows authorized admins to spectate players.",
+  "icon": "assets/adminscope/icon.png",
+  "authors": ["Abdo9616"],
+  "contact": {
+    "homepage": "https://modrinth.com/project/W8fUtxyA",
+    "sources": "https://github.com/Abdo9616/AdminScope-mod",
+    "issues": "https://github.com/Abdo9616/AdminScope-mod/issues"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.spectatemod.fabric.FabricSpectateMod"],
+    "modmenu": ["com.spectatemod.client.modmenu.AdminScopeModMenuIntegration"]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.22",
+    "minecraft": "~1.20.1",
+    "java": ">=17",
+    "fabric-api": ">=0.92.0+1.20.1"
+  },
+  "recommends": {
+    "modmenu": ">=7.2.2",
+    "cloth-config": ">=11.1.118"
+  }
+}
