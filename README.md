@@ -36,6 +36,7 @@ Key Features
 *   **Jail Mod compatibility**: Jailed players cannot spectate.
 *   **Crash recovery**: Spectate sessions are persisted to disk.
 *   **Auto-patching config**: New config fields are added automatically on update.
+*   **Optional Forge inventory viewer**: Forge servers can use `/invsee` to inspect or edit a target's live inventory, ender chest, and (when Traveler's Backpack is installed) worn backpack storage.
 
 How to use:
 -----------
@@ -173,3 +174,10 @@ Use the `/spectate reload` command after changing configuration. If you use cust
 ```bash
 /tag @p add admin
 ```
+
+Forge `/invsee`
+---------------
+
+The Forge build registers `/invsee <player>` and `/invsee` (the current spectate target). It uses vanilla generic chest menus, so the inspected player does not need a client mod. Operators receive these default permissions through Forge's Permission API: `adminscope.spectate` (level 2), `adminscope.invsee.view` (level 2), `adminscope.invsee.edit` (level 3), `adminscope.invsee.enderchest` (level 2), and `adminscope.invsee.backpack` (level 2). A permission manager such as LuckPerms may grant or override these nodes. Players matching the shared `admin_roles` entries in `config/spectatemod/config.json` also receive all invsee permissions.
+
+Forge generates `config/spectatemod/invsee.json` in UTF-8. It contains `enabled`, `allowSelfView`, `logStaffActions`, and a `menuButtons` array. Existing button arrays are preserved; new defaults are only written when the key is absent. `/spectate reload` reloads this file and closes open viewer menus. If Traveler's Backpack is not installed, the backpack button is omitted. If it is installed, the Forge server and every client using the native backpack viewer must have the matching Traveler's Backpack 1.20.1 release; AdminScope reuses its native menu, permits item interactions for viewers with `adminscope.invsee.edit` (or a configured admin role), and blocks only Traveler's settings/gear action during invsee.

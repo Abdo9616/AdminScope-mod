@@ -305,6 +305,12 @@ public class SpectateManager {
         return activeSpectators.containsKey(adminUuid);
     }
 
+    /** Returns the UUID of the player currently being spectated, if any. */
+    public UUID getSpectatedTargetUuid(UUID adminUuid) {
+        SpectateState state = activeSpectators.get(adminUuid);
+        return state == null ? null : state.getTargetUuid();
+    }
+
     public SpectateState getSpectateState(UUID adminUuid) {
         return activeSpectators.get(adminUuid);
     }
@@ -1049,7 +1055,9 @@ public class SpectateManager {
 
         // Keep the same 100-tick (~5s) recent-combat window used before migration.
         // TODO(AS-207): Re-validate this signal if combat timestamps are remapped again.
-        if (player.getLastHurtByMobTimestamp() > player.tickCount - 100) {
+        long lastHurtByMob = player.getLastHurtByMobTimestamp();
+        if (lastHurtByMob > 0 && player.tickCount >= lastHurtByMob
+                && player.tickCount - lastHurtByMob <= 100) {
             return true;
         }
 

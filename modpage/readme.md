@@ -34,6 +34,7 @@ Key Features
 *   **Jail Mod compatibility**: Jailed players cannot spectate.
 *   **Crash recovery**: Spectate sessions are persisted to disk.
 *   **Auto-patching config**: New config fields are added automatically on update.
+*   **Forge inventory viewer**: Authorized Forge staff can use `/invsee` to inspect or edit live player inventories, ender chests, and optional worn Traveler's Backpacks. The menu is vanilla-compatible for the inspected player.
 
 How to use:
 -----------
@@ -157,3 +158,8 @@ Use the `/spectate reload` command after changing configuration. If you use cust
 ```bash
 /tag @p add admin
 ```
+
+Forge-only `/invsee`
+--------------------
+
+Use `/invsee <player>` to open a target's live inventory, or `/invsee` while spectating to open the current target. The menu includes a second page and an ender-chest button. The backpack button appears only when Traveler's Backpack is installed; when available, AdminScope reuses Traveler's native menu, so the matching backpack mod must be installed on both server and clients. Viewing requires `adminscope.invsee.view`; editing requires `adminscope.invsee.edit`; the ender-chest and backpack buttons use `adminscope.invsee.enderchest` and `adminscope.invsee.backpack`. Players matching `admin_roles` receive all invsee permissions, and operators receive the documented default fallback levels. Configure the feature in the generated UTF-8 file `config/spectatemod/invsee.json`. During invsee, item interactions remain available to editors while Traveler's settings/gear action is blocked.

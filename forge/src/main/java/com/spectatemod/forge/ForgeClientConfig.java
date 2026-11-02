@@ -4,6 +4,7 @@ import com.spectatemod.client.config.AdminScopeClothConfigScreen;
 import net.minecraftforge.client.ConfigScreenHandler;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.ModLoadingContext;
+import net.minecraftforge.common.MinecraftForge;
 
 /** Client-only Forge integration for the configuration button in the Mods screen. */
 public final class ForgeClientConfig {
@@ -11,6 +12,7 @@ public final class ForgeClientConfig {
     }
 
     public static void register() {
+        MinecraftForge.EVENT_BUS.register(new InvseeBackpackClientGuard());
         if (!ModList.get().isLoaded("cloth_config")) {
             return;
         }

@@ -69,7 +69,8 @@ public class ConfigManager {
                 SpectateMod.LOGGER.info("Config file patched with missing fields");
             }
 
-            SpectateMod.LOGGER.info("Config loaded successfully");
+            SpectateMod.LOGGER.info("Config loaded successfully (prevent_combat_spectate={})",
+                    config.isPreventCombatSpectate());
         } catch (Exception e) {
             SpectateMod.LOGGER.error("Failed to load config, using defaults", e);
             config = new ModConfig();

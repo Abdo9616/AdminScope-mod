@@ -158,7 +158,7 @@ public class SpectateCommand {
 
         SpectateMod.getConfigManager().reloadConfig();
         context.getSource().sendSuccess(
-                () -> Component.literal("§aSpectate Mod configuration reloaded successfully!"), true);
+                () -> Component.literal("§aAdminScope configuration reloaded successfully!"), true);
         return 1;
     }
 }

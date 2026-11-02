@@ -26,6 +26,7 @@ processResources {
 
 repositories {
     maven { url = 'https://maven.shedaniel.me/' }
+    maven { url = 'https://www.cursemaven.com' }
     mavenCentral()
 }
 
@@ -60,6 +61,8 @@ minecraft {
 dependencies {
     minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
     implementation fg.deobf("me.shedaniel.cloth:cloth-config-forge:${project.cloth_config_version}")
+    // Compile against Traveler's Backpack's native menu, but keep it optional at runtime.
+    compileOnly fg.deobf("curse.maven:travelers-backpack-321117:8762800")
 }
 
 sourceSets {
