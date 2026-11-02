@@ -13,6 +13,7 @@ public final class InvseeMessages {
     public static final Component SELF_VIEW_DISABLED = Component.literal("§cYou cannot view your own inventory.");
     public static final Component NOT_SPECTATING = Component.literal("§cYou are not currently spectating anyone. Try /invsee <player>.");
     public static final Component TARGET_OFFLINE = Component.literal("§cThat player is no longer online.");
+    public static final Component TARGET_DEAD = Component.literal("§cThat player is currently dead.");
     public static final Component NO_BACKPACK = Component.literal("§eThat player is not wearing a Traveler's Backpack.");
     public static final Component BACKPACK_OPEN_FAILED = Component.literal("§cCould not open Traveler's Backpack's menu. Make sure it is installed on both the server and client.");
     public static final Component INVSEE_DISABLED = Component.literal("§cThe inventory viewer is disabled.");

@@ -6,6 +6,7 @@ import io.netty.channel.ChannelPipeline;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.inventory.AbstractContainerMenu;
 
 /**
  * Lets invsee menus receive ordinary container clicks while the viewer is a spectator.
@@ -30,11 +31,14 @@ public final class InvseeClickInterceptor {
                 // open, so a failed client-side guard can never open the viewer's own settings.
                 if (isInvseeSettingsAction(player, message)) return;
 
+                // Main inventory viewer and ender chest viewer are both plain vanilla chest
+                // menus that only need their clicks routed past vanilla's spectator check.
                 if (message instanceof ServerboundContainerClickPacket packet
                         && player.isSpectator()
                         && player.containerMenu != null
                         && packet.getContainerId() == player.containerMenu.containerId
-                        && player.containerMenu instanceof InvseeMenu menu) {
+                        && isNativeInvseeMenu(player.containerMenu)) {
+                    final AbstractContainerMenu menu = player.containerMenu;
                     // Packet decoding happens on Netty's event loop. Process the click on the
                     // server thread, just as vanilla's packet listener would.
                     player.getServer().execute(() -> handleClick(player, menu, packet));
@@ -58,7 +62,11 @@ public final class InvseeClickInterceptor {
         if (pipeline.get(HANDLER_NAME) != null) pipeline.remove(HANDLER_NAME);
     }
 
-    private static void handleClick(ServerPlayer player, InvseeMenu menu,
+    private static boolean isNativeInvseeMenu(AbstractContainerMenu menu) {
+        return menu instanceof InvseeMenu || menu instanceof EnderChestMenu;
+    }
+
+    private static void handleClick(ServerPlayer player, AbstractContainerMenu menu,
                                      ServerboundContainerClickPacket packet) {
         if (player.containerMenu != menu || !menu.stillValid(player)) {
             menu.sendAllDataToRemote();

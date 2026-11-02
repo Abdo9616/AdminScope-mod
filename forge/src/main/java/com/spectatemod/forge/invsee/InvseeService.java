@@ -42,6 +42,7 @@ public final class InvseeService {
         if (viewer == null || target == null || !config.isEnabled()) return;
         if (!InvseePermissions.canView(viewer)) { viewer.sendSystemMessage(InvseeMessages.VIEW_PERMISSION); return; }
         if (viewer == target && !config.allowSelfView()) { viewer.sendSystemMessage(InvseeMessages.SELF_VIEW_DISABLED); return; }
+        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
         close(viewer);
         viewer.openMenu(new SimpleMenuProvider((id, inventory, player) ->
                         new InvseeMenu(this, id, viewer, target, 1),
@@ -69,6 +70,7 @@ public final class InvseeService {
 
     private void openEnderChest(ServerPlayer viewer, ServerPlayer target) {
         if (!InvseePermissions.canOpenEnderChest(viewer)) { viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION); return; }
+        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
         viewer.openMenu(new SimpleMenuProvider((id, inventory, player) ->
                         new EnderChestMenu(this, id, viewer, target),
                 Component.literal(target.getName().getString() + "'s ender chest")));
@@ -79,6 +81,7 @@ public final class InvseeService {
 
     private void openBackpack(ServerPlayer viewer, ServerPlayer target) {
         if (!InvseePermissions.canOpenBackpack(viewer)) { viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION); return; }
+        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
         if (!TravelerBackpackCompat.isAvailable()) {
             viewer.sendSystemMessage(InvseeMessages.BACKPACK_OPEN_FAILED);
             return;
@@ -99,13 +102,13 @@ public final class InvseeService {
                     buffer.writeInt(TravelerBackpackCompat.INVSEE_SCREEN_ID);
                     buffer.writeInt(clientSlot);
                 });
-        if (!(viewer.containerMenu instanceof ReadonlyBackpackMenu)) {
+        if (!isReadonlyBackpackMenu(viewer.containerMenu)) {
             restoreTemporaryBackpackItem(viewer);
             viewer.sendSystemMessage(InvseeMessages.BACKPACK_OPEN_FAILED);
             SpectateMod.LOGGER.warn("Could not open the read-only Traveler's Backpack menu for {} viewing {}", viewer.getGameProfile().getName(), target.getGameProfile().getName());
             return;
         }
-        if (viewer.containerMenu instanceof ReadonlyBackpackMenu) {
+        if (isReadonlyBackpackMenu(viewer.containerMenu)) {
             nativeBackpacks.put(viewer.getUUID(), viewer.containerMenu);
             nativeBackpackTargets.put(viewer.getUUID(), target.getUUID());
             nativeBackpackViewers.put(viewer.getUUID(), viewer);
@@ -260,6 +263,10 @@ public final class InvseeService {
         if (temporary == null) return;
         viewer.getInventory().setItem(temporary.slot(), temporary.original().copy());
         viewer.containerMenu.broadcastChanges();
+    }
+
+    private static boolean isReadonlyBackpackMenu(AbstractContainerMenu menu) {
+        return "com.spectatemod.forge.invsee.ReadonlyBackpackMenu".equals(menu.getClass().getName());
     }
 
     private record TemporaryBackpackItem(int slot, ItemStack original) { }
