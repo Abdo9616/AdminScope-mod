@@ -26,5 +26,14 @@
   "recommends": {
     "modmenu": ">=7.2.2",
     "cloth-config": ">=11.1.118"
+  },
+  "custom": {
+    "modmenu": {
+      "links": {
+        "modmenu.modrinth": "https://modrinth.com/project/W8fUtxyA",
+        "modmenu.curseforge": "https://www.curseforge.com/minecraft/mc-mods/adminscope"
+      },
+      "update_checker": true
+    }
   }
 }
