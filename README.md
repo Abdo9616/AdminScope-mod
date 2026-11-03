@@ -28,7 +28,7 @@ Key Features
 *   **Accurate restore**: Position, gamemode, and dimension are restored when spectate ends.
 *   **Freecam distance limit**: Configurable boundary (default 30 blocks) with automatic snap-back and warnings.
 *   **Cooldown**: Configurable cooldown between spectate sessions (default 30 seconds).
-*   **Combat safety**: Optional block when in combat or near hostile mobs.
+*   **Combat safety**: Optional block when in combat or near hostile mobs to prevent abuse.
 *   **Player-only POV**: Camera is forced back to the target player if it switches to mobs or other entities.
 *   **Disconnect handling**: Spectating ends automatically if the target leaves the server.
 *   **Permission revocation handling**: An active session ends and restores the spectator if they lose permission.
