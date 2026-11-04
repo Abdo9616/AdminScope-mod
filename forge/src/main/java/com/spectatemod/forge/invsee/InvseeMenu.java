@@ -104,7 +104,36 @@ public final class InvseeMenu extends ChestMenu {
         return player == viewer && viewer.isAlive() && InvseeService.isOnline(target) && target.isAlive();
     }
 
-    @Override public ItemStack quickMoveStack(Player player, int index) { return ItemStack.EMPTY; }
+    /**
+     * Shift-click in both directions on page 1:
+     * - a target slot (armor, offhand, main, hotbar) moves into the viewer's own inventory;
+     * - a slot of the viewer's own inventory moves into the target's main inventory, then hotbar
+     *   (never into armor, offhand or button slots).
+     * Nothing moves when the viewer is looking at themselves, since both sides would be the same
+     * inventory, and button or locked slots never move.
+     */
+    @Override
+    public ItemStack quickMoveStack(Player player, int index) {
+        if (viewer == target || index < 0 || index >= this.slots.size()) return ItemStack.EMPTY;
+        int size = InvseeConfig.rowsForPage(page) * 9;
+        Slot slot = this.slots.get(index);
+        if (!slot.hasItem() || !slot.mayPickup(player)) return ItemStack.EMPTY;
+        ItemStack stack = slot.getItem();
+        ItemStack original = stack.copy();
+        boolean moved;
+        if (index < size) {
+            if (!(slot instanceof TargetSlot)) return ItemStack.EMPTY;
+            moved = this.moveItemStackTo(stack, size, this.slots.size(), true);
+        } else {
+            if (page != 1) return ItemStack.EMPTY;
+            int hotbarStart = (size / 9 - 1) * 9;
+            moved = this.moveItemStackTo(stack, 9, 36, false);
+            if (!stack.isEmpty()) moved |= this.moveItemStackTo(stack, hotbarStart, hotbarStart + 9, false);
+        }
+        if (!moved) return ItemStack.EMPTY;
+        if (stack.isEmpty()) slot.set(ItemStack.EMPTY); else slot.setChanged();
+        return original;
+    }
 
     @Override
     public void clicked(int slot, int button, ClickType type, Player player) {

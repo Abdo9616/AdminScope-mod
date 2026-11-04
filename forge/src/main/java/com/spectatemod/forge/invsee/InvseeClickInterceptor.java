@@ -128,10 +128,14 @@ public final class InvseeClickInterceptor {
         return isOpenSettingsAction(packet) ? DROP : PASS;
     }
 
-    /** Reads the packet through an independent view of its data, so the real packet is untouched. */
+    /**
+     * Inspects the packet through an independent slice of its data. getData() returns the packet's
+     * own buffer in 1.20.1, so reading it directly would advance the real reader index and corrupt
+     * the packet for whoever handles it next.
+     */
     private static boolean isOpenSettingsAction(ServerboundCustomPayloadPacket packet) {
         try {
-            FriendlyByteBuf data = packet.getData();
+            FriendlyByteBuf data = new FriendlyByteBuf(packet.getData().slice());
             if (data.readableBytes() < 1 || data.readUnsignedByte() != TB_ACTION_TAG_DISCRIMINATOR) return false;
             CompoundTag tag = data.readNbt();
             return tag != null && tag.getInt("ActionType") == TB_ACTION_OPEN_SETTINGS;
