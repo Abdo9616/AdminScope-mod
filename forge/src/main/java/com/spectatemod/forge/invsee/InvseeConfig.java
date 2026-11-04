@@ -17,10 +17,22 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Forge-only configuration for the optional inventory viewer. */
 public final class InvseeConfig {
+    /**
+     * Rows on page 1: armor/offhand/buttons row, three main-inventory rows and the hotbar row.
+     * Must be 5 or 6; set it to 6 to restore the old layout with a spare row above the hotbar.
+     */
+    public static final int PAGE_ONE_ROWS = 5;
+    /** Pages other than 1 are always six rows. */
+    private static final int OTHER_PAGE_ROWS = 6;
+    /** Pages the service can open: 1 (inventory) and 2 (extras). */
+    private static final int PAGE_COUNT = 2;
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private final Path path = PlatformHooks.configDirectory().resolve("invsee.json");
     private boolean enabled = true;
@@ -29,6 +41,9 @@ public final class InvseeConfig {
     private List<Button> buttons = defaults();
 
     public InvseeConfig() { load(); }
+
+    /** Number of chest rows used by the given menu page. */
+    public static int rowsForPage(int page) { return page == 1 ? PAGE_ONE_ROWS : OTHER_PAGE_ROWS; }
 
     public synchronized void load() {
         JsonObject root = new JsonObject();
@@ -64,6 +79,7 @@ public final class InvseeConfig {
     private List<Button> parseButtons(JsonObject root) {
         if (!root.has("menuButtons") || !root.get("menuButtons").isJsonArray()) return defaults();
         List<Button> result = new ArrayList<>();
+        Set<String> usedSlots = new HashSet<>();
         for (JsonElement element : root.getAsJsonArray("menuButtons")) {
             try {
                 JsonObject o = element.getAsJsonObject();
@@ -73,7 +89,20 @@ public final class InvseeConfig {
                 String action = o.has("action") ? o.get("action").getAsString() : "none";
                 List<String> lines = new ArrayList<>();
                 if (o.has("lines") && o.get("lines").isJsonArray()) for (JsonElement line : o.getAsJsonArray("lines")) lines.add(line.getAsString());
+
+                if (page < 1 || page > PAGE_COUNT) {
+                    throw new IllegalArgumentException("button '" + id + "' uses page " + page + " but only pages 1-" + PAGE_COUNT + " exist");
+                }
+                int size = rowsForPage(page) * 9;
+                if (slot < 0 || slot >= size) {
+                    throw new IllegalArgumentException("button '" + id + "' uses slot " + slot + " but page " + page + " only has slots 0-" + (size - 1));
+                }
+                if (!usedSlots.add(page + ":" + slot)) {
+                    throw new IllegalArgumentException("button '" + id + "' reuses page " + page + " slot " + slot + " which an earlier button already occupies");
+                }
                 result.add(new Button(id, page, slot, item, title, lines, action));
+            } catch (IllegalArgumentException e) {
+                SpectateMod.LOGGER.warn("Ignoring invsee menu button: {}", e.getMessage());
             } catch (Exception e) { SpectateMod.LOGGER.warn("Ignoring invalid invsee menu button", e); }
         }
         return result.isEmpty() ? defaults() : Collections.unmodifiableList(result);

@@ -44,6 +44,13 @@ public final class ReadonlyBackpackMenu extends BackpackItemMenu {
     @Override
     public void removed(Player player) {
         getWrapper().getPlayersUsing().remove(player);
+        // This override skips the normal menu cleanup, so an item still on the cursor would
+        // vanish. Hand it back to the viewer (inventory first, dropped if full).
+        ItemStack carried = getCarried();
+        if (!carried.isEmpty()) {
+            player.getInventory().placeItemBackInInventory(carried);
+            setCarried(ItemStack.EMPTY);
+        }
     }
 
     public boolean canEdit() {

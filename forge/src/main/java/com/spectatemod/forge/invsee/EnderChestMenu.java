@@ -27,9 +27,17 @@ final class EnderChestMenu extends ChestMenu {
         return viewer;
     }
 
+    ServerPlayer target() {
+        return target;
+    }
+
+    /**
+     * The target must still be the exact online player entity. After a logout the old entity
+     * lingers with its data already saved, so editing it would duplicate or lose items.
+     */
     @Override
     public boolean stillValid(Player player) {
-        return player == viewer && target.isAlive();
+        return player == viewer && viewer.isAlive() && InvseeService.isOnline(target) && target.isAlive();
     }
 
     // quickMoveStack is intentionally not overridden: vanilla ChestMenu handles
@@ -41,7 +49,8 @@ final class EnderChestMenu extends ChestMenu {
             service.deniedEdit(viewer);
             return;
         }
+        ContainerSnapshot before = ContainerSnapshot.of(target.getEnderChestInventory());
         super.clicked(slot, button, type, player);
-        service.edited(viewer, target, slot);
+        if (before.differsFrom(target.getEnderChestInventory())) service.edited(viewer, target, slot);
     }
 }

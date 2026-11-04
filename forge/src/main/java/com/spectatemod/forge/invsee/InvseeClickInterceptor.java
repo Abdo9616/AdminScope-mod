@@ -66,9 +66,17 @@ public final class InvseeClickInterceptor {
         return menu instanceof InvseeMenu || menu instanceof EnderChestMenu;
     }
 
+    /**
+     * Vanilla validates the slot index before calling the menu; this path bypasses vanilla,
+     * so it must do the same. Valid values are -999 (outside the window), -1, or a real slot.
+     */
+    private static boolean isValidSlot(AbstractContainerMenu menu, int slot) {
+        return slot == -999 || (slot >= -1 && menu.isValidSlotIndex(slot));
+    }
+
     private static void handleClick(ServerPlayer player, AbstractContainerMenu menu,
                                      ServerboundContainerClickPacket packet) {
-        if (player.containerMenu != menu || !menu.stillValid(player)) {
+        if (player.containerMenu != menu || !menu.stillValid(player) || !isValidSlot(menu, packet.getSlotNum())) {
             menu.sendAllDataToRemote();
             return;
         }
@@ -83,7 +91,7 @@ public final class InvseeClickInterceptor {
 
     private static void handleBackpackClick(ServerPlayer player, ReadonlyBackpackMenu menu,
                                              ServerboundContainerClickPacket packet) {
-        if (player.containerMenu != menu || !menu.stillValid(player)) {
+        if (player.containerMenu != menu || !menu.stillValid(player) || !isValidSlot(menu, packet.getSlotNum())) {
             menu.sendAllDataToRemote();
             return;
         }

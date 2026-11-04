@@ -26,23 +26,34 @@ import java.util.UUID;
 
 /** Owns Forge invsee sessions and keeps them tied to online player entities. */
 public final class InvseeService {
+    /** Minimum gap between "No permission" messages so a drag or spam-click can't flood chat and logs. */
+    private static final long DENIED_MESSAGE_COOLDOWN_MS = 1000L;
+
     private final InvseeConfig config = new InvseeConfig();
     private final Map<UUID, InvseeMenu> openMenus = new HashMap<>();
     private final Map<UUID, BackpackMenu> openBackpacks = new HashMap<>();
     private final Map<UUID, EnderChestMenu> openEnderChests = new HashMap<>();
     private final Map<UUID, AbstractContainerMenu> nativeBackpacks = new HashMap<>();
-    private final Map<UUID, UUID> nativeBackpackTargets = new HashMap<>();
+    /** Viewer UUID -> the exact target entity whose backpack that viewer has open. */
+    private final Map<UUID, ServerPlayer> nativeBackpackTargets = new HashMap<>();
     private final Map<UUID, ServerPlayer> nativeBackpackViewers = new HashMap<>();
     private final Map<UUID, TemporaryBackpackItem> temporaryBackpackItems = new HashMap<>();
     private final Map<UUID, UUID> shortcutTargets = new HashMap<>();
+    private final Map<UUID, Long> lastDeniedAt = new HashMap<>();
 
     public InvseeConfig config() { return config; }
+
+    /** True only while {@code target} is the exact entity currently in the server's player list. */
+    static boolean isOnline(ServerPlayer target) {
+        MinecraftServer server = target.getServer();
+        return server != null && server.getPlayerList().getPlayer(target.getUUID()) == target;
+    }
 
     public void open(ServerPlayer viewer, ServerPlayer target) {
         if (viewer == null || target == null || !config.isEnabled()) return;
         if (!InvseePermissions.canView(viewer)) { viewer.sendSystemMessage(InvseeMessages.VIEW_PERMISSION); return; }
         if (viewer == target && !config.allowSelfView()) { viewer.sendSystemMessage(InvseeMessages.SELF_VIEW_DISABLED); return; }
-        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
+        if (rejectUnavailableTarget(viewer, target)) return;
         close(viewer);
         viewer.openMenu(new SimpleMenuProvider((id, inventory, player) ->
                         new InvseeMenu(this, id, viewer, target, 1),
@@ -61,7 +72,18 @@ public final class InvseeService {
         if ("open_backpack".equals(button.action)) openBackpack(viewer, menu.target());
     }
 
+    /**
+     * Tells the viewer when a target is offline or dead. Returns true when the action should stop.
+     * Used when a viewer tries to open something; forced closes use {@link #targetClosedReason}.
+     */
+    private boolean rejectUnavailableTarget(ServerPlayer viewer, ServerPlayer target) {
+        if (!isOnline(target)) { viewer.sendSystemMessage(InvseeMessages.TARGET_OFFLINE); return true; }
+        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return true; }
+        return false;
+    }
+
     private void openPage(ServerPlayer viewer, ServerPlayer target, int page) {
+        if (rejectUnavailableTarget(viewer, target)) { close(viewer); return; }
         viewer.openMenu(new SimpleMenuProvider((id, inventory, player) ->
                         new InvseeMenu(this, id, viewer, target, page),
                 Component.literal(target.getName().getString() + "'s inventory")));
@@ -70,7 +92,7 @@ public final class InvseeService {
 
     private void openEnderChest(ServerPlayer viewer, ServerPlayer target) {
         if (!InvseePermissions.canOpenEnderChest(viewer)) { viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION); return; }
-        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
+        if (rejectUnavailableTarget(viewer, target)) { close(viewer); return; }
         viewer.openMenu(new SimpleMenuProvider((id, inventory, player) ->
                         new EnderChestMenu(this, id, viewer, target),
                 Component.literal(target.getName().getString() + "'s ender chest")));
@@ -81,7 +103,7 @@ public final class InvseeService {
 
     private void openBackpack(ServerPlayer viewer, ServerPlayer target) {
         if (!InvseePermissions.canOpenBackpack(viewer)) { viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION); return; }
-        if (!target.isAlive()) { viewer.sendSystemMessage(InvseeMessages.TARGET_DEAD); return; }
+        if (rejectUnavailableTarget(viewer, target)) { close(viewer); return; }
         if (!TravelerBackpackCompat.isAvailable()) {
             viewer.sendSystemMessage(InvseeMessages.BACKPACK_OPEN_FAILED);
             return;
@@ -110,7 +132,7 @@ public final class InvseeService {
         }
         if (isReadonlyBackpackMenu(viewer.containerMenu)) {
             nativeBackpacks.put(viewer.getUUID(), viewer.containerMenu);
-            nativeBackpackTargets.put(viewer.getUUID(), target.getUUID());
+            nativeBackpackTargets.put(viewer.getUUID(), target);
             nativeBackpackViewers.put(viewer.getUUID(), viewer);
             InvseeNetwork.markBackpackScreen(viewer, viewer.containerMenu.containerId);
         }
@@ -132,43 +154,71 @@ public final class InvseeService {
     }
 
     public void edited(ServerPlayer viewer, ServerPlayer target, int slot) { log("{} edited {}'s inventory slot {}", viewer, target, slot); }
-    public void deniedEdit(ServerPlayer viewer) { viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION); log("{} was denied an invsee edit", viewer); }
+
+    public void deniedEdit(ServerPlayer viewer) {
+        long now = System.currentTimeMillis();
+        Long last = lastDeniedAt.get(viewer.getUUID());
+        if (last != null && now - last < DENIED_MESSAGE_COOLDOWN_MS) return;
+        lastDeniedAt.put(viewer.getUUID(), now);
+        viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION);
+        log("{} was denied an invsee edit", viewer);
+    }
+
+    /**
+     * Why a viewer session on {@code expected} must end because of the target, or null if the
+     * target is still the same online, living entity. A different entity with the same UUID means
+     * the target reconnected (or respawned), and the old session's data is stale either way.
+     */
+    private static Component targetClosedReason(MinecraftServer server, ServerPlayer expected) {
+        ServerPlayer current = server.getPlayerList().getPlayer(expected.getUUID());
+        if (current == null) return InvseeMessages.TARGET_LEFT;
+        if (current != expected) return expected.isAlive() ? InvseeMessages.TARGET_LEFT : InvseeMessages.TARGET_DEAD;
+        if (!current.isAlive()) return InvseeMessages.TARGET_DEAD;
+        return null;
+    }
+
+    /**
+     * Ends a viewer session when it is no longer valid and returns true if it did. Silent when the
+     * viewer closed it or left; tells the viewer why when the target caused it.
+     */
+    private boolean endSessionIfInvalid(MinecraftServer server, ServerPlayer viewer, AbstractContainerMenu menu,
+                                        ServerPlayer expectedTarget) {
+        if (viewer == null || !viewer.isAlive() || viewer.containerMenu != menu) {
+            if (viewer != null && viewer.containerMenu == menu) viewer.closeContainer();
+            return true;
+        }
+        Component reason = expectedTarget == null ? null : targetClosedReason(server, expectedTarget);
+        if (reason == null) return false;
+        viewer.closeContainer();
+        viewer.sendSystemMessage(reason);
+        return true;
+    }
 
     public void tick(MinecraftServer server) {
         openMenus.entrySet().removeIf(entry -> {
             ServerPlayer viewer = server.getPlayerList().getPlayer(entry.getKey());
             InvseeMenu menu = entry.getValue();
-            ServerPlayer target = server.getPlayerList().getPlayer(menu.target().getUUID());
-            if (viewer == null || target == null || !viewer.isAlive() || !target.isAlive() || viewer.containerMenu != menu) {
-                if (viewer != null && viewer.containerMenu == menu) viewer.closeContainer();
-                return true;
-            }
-            menu.refresh(); return false;
+            if (endSessionIfInvalid(server, viewer, menu, menu.target())) return true;
+            menu.refresh();
+            return false;
         });
         openBackpacks.entrySet().removeIf(entry -> {
             ServerPlayer viewer = server.getPlayerList().getPlayer(entry.getKey());
             BackpackMenu menu = entry.getValue();
-            ServerPlayer target = server.getPlayerList().getPlayer(menu.target().getUUID());
-            if (viewer == null || target == null || !viewer.isAlive() || !target.isAlive() || viewer.containerMenu != menu) {
-                if (viewer != null && viewer.containerMenu == menu) viewer.closeContainer();
-                return true;
-            }
-            menu.broadcastChanges(); return false;
+            if (endSessionIfInvalid(server, viewer, menu, menu.target())) return true;
+            menu.broadcastChanges();
+            return false;
         });
         openEnderChests.entrySet().removeIf(entry -> {
             ServerPlayer viewer = server.getPlayerList().getPlayer(entry.getKey());
             EnderChestMenu menu = entry.getValue();
-            if (viewer == null || !viewer.isAlive() || viewer.containerMenu != menu) {
-                if (viewer != null && viewer.containerMenu == menu) viewer.closeContainer();
-                return true;
-            }
-            menu.broadcastChanges(); return false;
+            if (endSessionIfInvalid(server, viewer, menu, menu.target())) return true;
+            menu.broadcastChanges();
+            return false;
         });
         nativeBackpacks.entrySet().removeIf(entry -> {
             ServerPlayer viewer = server.getPlayerList().getPlayer(entry.getKey());
-            ServerPlayer target = server.getPlayerList().getPlayer(nativeBackpackTargets.get(entry.getKey()));
-            if (viewer == null || target == null || !viewer.isAlive() || !target.isAlive() || viewer.containerMenu != entry.getValue()) {
-                if (viewer != null && viewer.containerMenu == entry.getValue()) viewer.closeContainer();
+            if (endSessionIfInvalid(server, viewer, entry.getValue(), nativeBackpackTargets.get(entry.getKey()))) {
                 nativeBackpackTargets.remove(entry.getKey());
                 nativeBackpackViewers.remove(entry.getKey());
                 return true;
@@ -222,19 +272,44 @@ public final class InvseeService {
         temporaryBackpackItems.clear();
         openMenus.clear(); openBackpacks.clear(); openEnderChests.clear(); nativeBackpacks.clear(); nativeBackpackTargets.clear(); nativeBackpackViewers.clear();
     }
+
+    /**
+     * Called while {@code player} is leaving. Closes the player's own viewer sessions, and also
+     * closes and alerts every staff member who has this player's inventory, ender chest or
+     * backpack open. The logout event fires before the player entity is removed, so waiting for
+     * the menus' own validity checks would leave a window to edit data that was already saved.
+     */
     public void onLogout(ServerPlayer player) {
         close(player);
-        openMenus.values().removeIf(menu -> menu.target() == player);
-        openBackpacks.values().removeIf(menu -> menu.target() == player);
-        openEnderChests.remove(player.getUUID());
-        nativeBackpackTargets.entrySet().removeIf(entry -> {
-            if (!entry.getValue().equals(player.getUUID())) return false;
-            nativeBackpacks.remove(entry.getKey());
-            nativeBackpackViewers.remove(entry.getKey());
-            return true;
-        });
+        closeSessionsViewing(player);
+        lastDeniedAt.remove(player.getUUID());
         shortcutTargets.remove(player.getUUID());
     }
+
+    private void closeSessionsViewing(ServerPlayer leaving) {
+        UUID leavingId = leaving.getUUID();
+        Map<UUID, ServerPlayer> viewers = new HashMap<>();
+        openMenus.values().forEach(menu -> {
+            if (menu.target().getUUID().equals(leavingId)) viewers.put(menu.viewerForService().getUUID(), menu.viewerForService());
+        });
+        openBackpacks.values().forEach(menu -> {
+            if (menu.target().getUUID().equals(leavingId)) viewers.put(menu.viewer().getUUID(), menu.viewer());
+        });
+        openEnderChests.values().forEach(menu -> {
+            if (menu.target().getUUID().equals(leavingId)) viewers.put(menu.viewerForService().getUUID(), menu.viewerForService());
+        });
+        nativeBackpackTargets.forEach((viewerId, target) -> {
+            if (!target.getUUID().equals(leavingId)) return;
+            ServerPlayer viewer = nativeBackpackViewers.get(viewerId);
+            if (viewer != null) viewers.put(viewerId, viewer);
+        });
+        viewers.remove(leavingId);
+        for (ServerPlayer viewer : viewers.values()) {
+            close(viewer);
+            viewer.sendSystemMessage(InvseeMessages.TARGET_LEFT);
+        }
+    }
+
     public void reload() { closeAll(); config.load(); }
 
     private void log(String message, Object... args) { if (config.logStaffActions()) SpectateMod.LOGGER.info(message, args); }
