@@ -22,7 +22,9 @@ public final class ReadonlyBackpackMenu extends BackpackItemMenu {
         if (canEdit()) {
             super.clicked(slotId, dragType, clickType, player);
         } else {
+            // Undo the client's predicted move and tell the viewer why, like the other invsee menus.
             sendAllDataToRemote();
+            InvseeService.notifyDenied(viewer);
         }
     }
 

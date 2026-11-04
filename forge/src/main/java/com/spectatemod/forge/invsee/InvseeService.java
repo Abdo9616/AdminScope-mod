@@ -41,6 +41,19 @@ public final class InvseeService {
     private final Map<UUID, UUID> shortcutTargets = new HashMap<>();
     private final Map<UUID, Long> lastDeniedAt = new HashMap<>();
 
+    /** The running service, so menus that are not built by the service (e.g. the backpack menu) can reach it. */
+    private static volatile InvseeService instance;
+
+    public InvseeService() { instance = this; }
+
+    /** Sends the shared, rate-limited "No permission" message to a viewer who tried a blocked edit. */
+    static void notifyDenied(ServerPlayer viewer) {
+        if (viewer == null) return;
+        InvseeService service = instance;
+        if (service != null) service.deniedEdit(viewer);
+        else viewer.sendSystemMessage(InvseeMessages.NO_PERMISSION);
+    }
+
     public InvseeConfig config() { return config; }
 
     /** True only while {@code target} is the exact entity currently in the server's player list. */
@@ -109,6 +122,8 @@ public final class InvseeService {
             return;
         }
         if (TravelerBackpackCompat.getWearingBackpack(target).isEmpty()) {
+            SpectateMod.LOGGER.info("Invsee found no worn Traveler's Backpack on {} (target entity {}); if they are wearing one, check the console for a lookup warning",
+                    target.getGameProfile().getName(), System.identityHashCode(target));
             viewer.sendSystemMessage(InvseeMessages.NO_BACKPACK);
             return;
         }
@@ -134,6 +149,10 @@ public final class InvseeService {
             nativeBackpacks.put(viewer.getUUID(), viewer.containerMenu);
             nativeBackpackTargets.put(viewer.getUUID(), target);
             nativeBackpackViewers.put(viewer.getUUID(), viewer);
+            // Traveler's Backpack's tabs, sort buttons and filters are custom packets, not container
+            // clicks, so the connection guard must be present even for non-spectating viewers.
+            InvseeClickInterceptor.install(viewer);
+            InvseeClickInterceptor.beginBackpackSession(viewer, InvseePermissions.canEdit(viewer));
             InvseeNetwork.markBackpackScreen(viewer, viewer.containerMenu.containerId);
         }
         log("{} opened {}'s backpack", viewer, target);
@@ -221,8 +240,11 @@ public final class InvseeService {
             if (endSessionIfInvalid(server, viewer, entry.getValue(), nativeBackpackTargets.get(entry.getKey()))) {
                 nativeBackpackTargets.remove(entry.getKey());
                 nativeBackpackViewers.remove(entry.getKey());
+                InvseeClickInterceptor.endBackpackSession(entry.getKey());
                 return true;
             }
+            // Keep the Netty-side guard in step with permission changes made while the menu is open.
+            InvseeClickInterceptor.beginBackpackSession(viewer, InvseePermissions.canEdit(viewer));
             entry.getValue().broadcastChanges();
             return false;
         });
@@ -254,6 +276,7 @@ public final class InvseeService {
             nativeBackpacks.remove(viewer.getUUID());
             nativeBackpackTargets.remove(viewer.getUUID());
             nativeBackpackViewers.remove(viewer.getUUID());
+            InvseeClickInterceptor.endBackpackSession(viewer.getUUID());
             restoreTemporaryBackpackItem(viewer);
             if (viewer.containerMenu instanceof InvseeMenu || viewer.containerMenu instanceof BackpackMenu
                     || viewer.containerMenu instanceof EnderChestMenu || hasNativeBackpack) viewer.closeContainer();
@@ -266,6 +289,7 @@ public final class InvseeService {
         openEnderChests.values().forEach(menu -> viewers.add(menu.viewerForService()));
         nativeBackpackViewers.values().forEach(viewers::add);
         for (ServerPlayer viewer : viewers) {
+            InvseeClickInterceptor.endBackpackSession(viewer.getUUID());
             restoreTemporaryBackpackItem(viewer);
             viewer.closeContainer();
         }

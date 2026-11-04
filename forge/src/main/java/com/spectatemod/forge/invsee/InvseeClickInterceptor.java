@@ -4,19 +4,56 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
+import net.minecraft.network.protocol.game.ServerboundCustomPayloadPacket;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
- * Lets invsee menus receive ordinary container clicks while the viewer is a spectator.
- * Vanilla rejects those packets before calling the menu, so this is intentionally attached
+ * Lets invsee menus receive ordinary container clicks while the viewer is a spectator, and
+ * stops Traveler's Backpack's own action packets from editing a backpack the viewer may only look at.
+ * Vanilla rejects spectator clicks before calling the menu, so this is intentionally attached
  * to the player's connection rather than changing the viewer's game mode.
  */
 public final class InvseeClickInterceptor {
     private static final String HANDLER_NAME = "adminscope_invsee_clicks";
 
+    private static final String READONLY_BACKPACK_MENU = "com.spectatemod.forge.invsee.ReadonlyBackpackMenu";
+    /** Traveler's Backpack registers all of its packets on this one channel (travelersbackpack:network). */
+    private static final String TB_CHANNEL_NAMESPACE = "travelersbackpack";
+    private static final String TB_CHANNEL_PATH = "network";
+    /** Discriminator of ServerboundActionTagPacket in TB 9.1.x's channel registration. */
+    private static final int TB_ACTION_TAG_DISCRIMINATOR = 10;
+    /** ActionType that opens the backpack settings screen. */
+    private static final int TB_ACTION_OPEN_SETTINGS = 10;
+
+    private static final int PASS = 0;
+    private static final int DROP = 1;
+    private static final int DROP_AND_NOTIFY = 2;
+
+    /**
+     * Viewers who currently have an invsee Traveler's Backpack menu open, mapped to whether they
+     * may edit. Written on the server thread, read on the Netty thread, so it is concurrent and
+     * holds a plain boolean instead of asking the permission system from the network thread.
+     */
+    private static final Map<UUID, Boolean> BACKPACK_SESSIONS = new ConcurrentHashMap<>();
+
     private InvseeClickInterceptor() {
+    }
+
+    /** Marks {@code viewer} as looking at someone's backpack; call again to refresh the edit flag. */
+    static void beginBackpackSession(ServerPlayer viewer, boolean canEdit) {
+        BACKPACK_SESSIONS.put(viewer.getUUID(), canEdit);
+    }
+
+    static void endBackpackSession(UUID viewerId) {
+        BACKPACK_SESSIONS.remove(viewerId);
     }
 
     public static void install(ServerPlayer player) {
@@ -26,10 +63,18 @@ public final class InvseeClickInterceptor {
         pipeline.addBefore("packet_handler", HANDLER_NAME, new ChannelDuplexHandler() {
             @Override
             public void channelRead(ChannelHandlerContext context, Object message) throws Exception {
-                // Traveler's settings button sends a custom packet rather than a normal
-                // container click. Reject only that action while the invsee native menu is
-                // open, so a failed client-side guard can never open the viewer's own settings.
-                if (isInvseeSettingsAction(player, message)) return;
+                // Traveler's Backpack's tabs, sort/transfer buttons, upgrade removal and filter
+                // settings are not container clicks; they arrive as custom packets and act on the
+                // open menu's backpack directly. Without this a view-only staff member could still
+                // change (or take upgrades out of) the target's backpack.
+                int verdict = travelersPacketVerdict(player, message);
+                if (verdict != PASS) {
+                    releaseDropped(message);
+                    if (verdict == DROP_AND_NOTIFY) {
+                        player.getServer().execute(() -> InvseeService.notifyDenied(player));
+                    }
+                    return;
+                }
 
                 // Main inventory viewer and ender chest viewer are both plain vanilla chest
                 // menus that only need their clicks routed past vanilla's spectator check.
@@ -67,6 +112,46 @@ public final class InvseeClickInterceptor {
     }
 
     /**
+     * Decides what to do with a packet while the viewer has an invsee backpack open.
+     * View-only viewers lose every Traveler's Backpack packet (and are told why); viewers who may
+     * edit lose only the settings screen, which would open the target's settings for them.
+     */
+    private static int travelersPacketVerdict(ServerPlayer player, Object message) {
+        if (!(message instanceof ServerboundCustomPayloadPacket packet)) return PASS;
+        Boolean canEdit = BACKPACK_SESSIONS.get(player.getUUID());
+        if (canEdit == null) return PASS;
+        AbstractContainerMenu menu = player.containerMenu;
+        if (menu == null || !READONLY_BACKPACK_MENU.equals(menu.getClass().getName())) return PASS;
+        ResourceLocation channel = packet.getIdentifier();
+        if (!TB_CHANNEL_NAMESPACE.equals(channel.getNamespace()) || !TB_CHANNEL_PATH.equals(channel.getPath())) return PASS;
+        if (!canEdit) return DROP_AND_NOTIFY;
+        return isOpenSettingsAction(packet) ? DROP : PASS;
+    }
+
+    /** Reads the packet through an independent view of its data, so the real packet is untouched. */
+    private static boolean isOpenSettingsAction(ServerboundCustomPayloadPacket packet) {
+        try {
+            FriendlyByteBuf data = packet.getData();
+            if (data.readableBytes() < 1 || data.readUnsignedByte() != TB_ACTION_TAG_DISCRIMINATOR) return false;
+            CompoundTag tag = data.readNbt();
+            return tag != null && tag.getInt("ActionType") == TB_ACTION_OPEN_SETTINGS;
+        } catch (RuntimeException malformed) {
+            return false;
+        }
+    }
+
+    /** A dropped custom payload still owns its buffer; free it since nothing downstream will. */
+    private static void releaseDropped(Object message) {
+        if (message instanceof ServerboundCustomPayloadPacket packet) {
+            try {
+                packet.getData().release();
+            } catch (RuntimeException ignored) {
+                // Already released or not reference counted; nothing more to do.
+            }
+        }
+    }
+
+    /**
      * Vanilla validates the slot index before calling the menu; this path bypasses vanilla,
      * so it must do the same. Valid values are -999 (outside the window), -1, or a real slot.
      */
@@ -99,23 +184,6 @@ public final class InvseeClickInterceptor {
         menu.clicked(packet.getSlotNum(), packet.getButtonNum(), packet.getClickType(), player);
         if (player.containerMenu == menu) {
             menu.broadcastFullState();
-        }
-    }
-
-    private static boolean isInvseeSettingsAction(ServerPlayer player, Object message) {
-        if (player.containerMenu == null
-                || !"com.spectatemod.forge.invsee.ReadonlyBackpackMenu".equals(
-                player.containerMenu.getClass().getName())
-                || !"com.tiviacz.travelersbackpack.network.ServerboundActionTagPacket".equals(
-                message.getClass().getName())) {
-            return false;
-        }
-
-        try {
-            Object actionTag = message.getClass().getMethod("actionTag").invoke(message);
-            return actionTag instanceof CompoundTag tag && tag.getInt("ActionType") == 10;
-        } catch (ReflectiveOperationException ignored) {
-            return false;
         }
     }
 }
