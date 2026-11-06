@@ -1,6 +1,7 @@
 package com.spectatemod.forge.invsee;
 
 import com.spectatemod.SpectateMod;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Player;
@@ -16,6 +17,8 @@ import java.lang.reflect.Method;
 final class TravelerBackpackCompat {
     static final int INVSEE_SCREEN_ID = 99;
     static final String INVSEE_CLIENT_TAG = "adminscope_invsee_backpack";
+    private static boolean loggedLookupFailure;
+    private static boolean loggedScreenSyncFailure;
 
     private TravelerBackpackCompat() { }
 
@@ -70,8 +73,64 @@ final class TravelerBackpackCompat {
             Object stack = get.invoke(null, target);
             return stack instanceof ItemStack itemStack ? itemStack.copy() : ItemStack.EMPTY;
         } catch (Throwable failure) {
-            SpectateMod.LOGGER.debug("Could not read the worn Traveler's Backpack icon", failure);
+            // Not just "no backpack": the lookup itself failed. Say so once at WARN with the cause,
+            // so an empty result that is really an error is visible in the console.
+            if (!loggedLookupFailure) {
+                loggedLookupFailure = true;
+                SpectateMod.LOGGER.warn("Could not read {}'s worn Traveler's Backpack; invsee will treat them as not wearing one", target.getGameProfile().getName(), failure);
+            } else {
+                SpectateMod.LOGGER.debug("Could not read the worn Traveler's Backpack icon", failure);
+            }
             return ItemStack.EMPTY;
+        }
+    }
+
+    /** The target's current "show tool slots" setting, or null when it cannot be read. */
+    static Boolean showToolSlots(ServerPlayer target) {
+        if (!ModList.get().isLoaded("travelersbackpack")) return null;
+        try {
+            Class<?> utils = Class.forName("com.tiviacz.travelersbackpack.capability.CapabilityUtils");
+            // Read the worn stack's own NBT: it is where Traveler's keeps this setting, and it is
+            // cheap. Asking for a wrapper every tick would not be (with Curios integration Traveler's
+            // builds a brand new one per call). The stack is only read here, never changed or copied.
+            Object stack = utils.getMethod("getWearingBackpack", Player.class).invoke(null, target);
+            if (!(stack instanceof ItemStack backpack) || backpack.isEmpty()) return null;
+            CompoundTag tag = backpack.getTag();
+            return tag != null && tag.getBoolean("ShowToolSlots");
+        } catch (Throwable failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Refreshes the "show tool slots" setting on the viewer's open Traveler's Backpack screen.
+     *
+     * The invsee screen runs on a private copy of the target's backpack, so Traveler's normal sync
+     * never reaches it. Traveler's own client handler for ClientboundSyncItemStackPacket has a mode
+     * (slot -1) that merges the given keys into whatever backpack menu the receiving player has
+     * open. Sending that packet needs nothing from AdminScope on the client, only Traveler's
+     * Backpack, which a viewer must have installed to see this screen at all.
+     *
+     * Returns true when the packet was handed to the network layer.
+     */
+    static boolean syncShowToolSlotsToScreen(ServerPlayer viewer, ItemStack backpackItem, boolean show) {
+        if (!ModList.get().isLoaded("travelersbackpack") || viewer.connection == null) return false;
+        try {
+            CompoundTag changes = new CompoundTag();
+            changes.putBoolean("ShowToolSlots", show);
+            Class<?> packetClass = Class.forName("com.tiviacz.travelersbackpack.network.ClientboundSyncItemStackPacket");
+            // (entity id of the receiving player, slot -1 = "the open menu's backpack", item, changed keys)
+            Object packet = packetClass.getConstructor(int.class, int.class, ItemStack.class, CompoundTag.class)
+                    .newInstance(viewer.getId(), -1, backpackItem, changes);
+            Class<?> helper = Class.forName("com.tiviacz.travelersbackpack.util.PacketDistributorHelper");
+            helper.getMethod("sendToPlayer", ServerPlayer.class, Object.class).invoke(null, viewer, packet);
+            return true;
+        } catch (Throwable failure) {
+            if (!loggedScreenSyncFailure) {
+                loggedScreenSyncFailure = true;
+                SpectateMod.LOGGER.warn("Could not refresh {}'s open backpack screen through Traveler's Backpack; their screen will only update when reopened", viewer.getGameProfile().getName(), failure);
+            }
+            return false;
         }
     }
 

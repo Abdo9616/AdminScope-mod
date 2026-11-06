@@ -40,6 +40,8 @@ public final class InvseeService {
     private final Map<UUID, TemporaryBackpackItem> temporaryBackpackItems = new HashMap<>();
     private final Map<UUID, UUID> shortcutTargets = new HashMap<>();
     private final Map<UUID, Long> lastDeniedAt = new HashMap<>();
+    /** Viewer UUID -> the "show tool slots" value their open backpack screen currently displays. */
+    private final Map<UUID, Boolean> toolSlotsOnClient = new HashMap<>();
 
     /** The running service, so menus that are not built by the service (e.g. the backpack menu) can reach it. */
     private static volatile InvseeService instance;
@@ -154,6 +156,8 @@ public final class InvseeService {
             InvseeClickInterceptor.install(viewer);
             InvseeClickInterceptor.beginBackpackSession(viewer, InvseePermissions.canEdit(viewer));
             InvseeNetwork.markBackpackScreen(viewer, viewer.containerMenu.containerId);
+            Boolean toolSlots = TravelerBackpackCompat.showToolSlots(target);
+            if (toolSlots != null) toolSlotsOnClient.put(viewer.getUUID(), toolSlots);
         }
         log("{} opened {}'s backpack", viewer, target);
     }
@@ -241,10 +245,12 @@ public final class InvseeService {
                 nativeBackpackTargets.remove(entry.getKey());
                 nativeBackpackViewers.remove(entry.getKey());
                 InvseeClickInterceptor.endBackpackSession(entry.getKey());
+                toolSlotsOnClient.remove(entry.getKey());
                 return true;
             }
             // Keep the Netty-side guard in step with permission changes made while the menu is open.
             InvseeClickInterceptor.beginBackpackSession(viewer, InvseePermissions.canEdit(viewer));
+            syncToolSlots(viewer, nativeBackpackTargets.get(entry.getKey()));
             entry.getValue().broadcastChanges();
             return false;
         });
@@ -267,6 +273,25 @@ public final class InvseeService {
         }
     }
 
+    /**
+     * The backpack screen shows a private copy of the target's backpack, so when the target's real
+     * "show tool slots" setting changes (an editor pressed the button, or the target did) the
+     * viewer's screen has to be told. Tool slots only accept clicks while the real setting is on.
+     * This is done with Traveler's own sync packet, so it works for every viewer without any
+     * AdminScope code on their client.
+     */
+    private void syncToolSlots(ServerPlayer viewer, ServerPlayer target) {
+        if (target == null) return;
+        Boolean current = TravelerBackpackCompat.showToolSlots(target);
+        if (current == null || current.equals(toolSlotsOnClient.get(viewer.getUUID()))) return;
+        toolSlotsOnClient.put(viewer.getUUID(), current);
+        boolean sent = TravelerBackpackCompat.syncShowToolSlotsToScreen(
+                viewer, TravelerBackpackCompat.getWearingBackpack(target), current);
+        SpectateMod.LOGGER.info("Invsee: {}'s tool slots are now {}; {} {}'s backpack screen",
+                target.getGameProfile().getName(), current ? "shown" : "hidden",
+                sent ? "refreshed" : "could not refresh", viewer.getGameProfile().getName());
+    }
+
     public void close(ServerPlayer viewer) {
         if (viewer != null) {
             boolean hasNativeBackpack = nativeBackpacks.containsKey(viewer.getUUID());
@@ -277,6 +302,7 @@ public final class InvseeService {
             nativeBackpackTargets.remove(viewer.getUUID());
             nativeBackpackViewers.remove(viewer.getUUID());
             InvseeClickInterceptor.endBackpackSession(viewer.getUUID());
+            toolSlotsOnClient.remove(viewer.getUUID());
             restoreTemporaryBackpackItem(viewer);
             if (viewer.containerMenu instanceof InvseeMenu || viewer.containerMenu instanceof BackpackMenu
                     || viewer.containerMenu instanceof EnderChestMenu || hasNativeBackpack) viewer.closeContainer();
@@ -288,6 +314,7 @@ public final class InvseeService {
         openBackpacks.values().forEach(menu -> viewers.add(menu.viewer()));
         openEnderChests.values().forEach(menu -> viewers.add(menu.viewerForService()));
         nativeBackpackViewers.values().forEach(viewers::add);
+        toolSlotsOnClient.clear();
         for (ServerPlayer viewer : viewers) {
             InvseeClickInterceptor.endBackpackSession(viewer.getUUID());
             restoreTemporaryBackpackItem(viewer);

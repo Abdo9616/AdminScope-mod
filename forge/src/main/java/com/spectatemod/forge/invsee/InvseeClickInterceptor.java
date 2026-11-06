@@ -89,14 +89,6 @@ public final class InvseeClickInterceptor {
                     player.getServer().execute(() -> handleClick(player, menu, packet));
                     return;
                 }
-                if (message instanceof ServerboundContainerClickPacket packet
-                        && player.isSpectator()
-                        && player.containerMenu != null
-                        && packet.getContainerId() == player.containerMenu.containerId
-                        && player.containerMenu instanceof ReadonlyBackpackMenu menu) {
-                    player.getServer().execute(() -> handleBackpackClick(player, menu, packet));
-                    return;
-                }
                 super.channelRead(context, message);
             }
         });
@@ -107,8 +99,16 @@ public final class InvseeClickInterceptor {
         if (pipeline.get(HANDLER_NAME) != null) pipeline.remove(HANDLER_NAME);
     }
 
+    /**
+     * Never name ReadonlyBackpackMenu as a type anywhere in this class (no instanceof, no casts, no
+     * parameters, and no passing it where a supertype is expected). It extends a Traveler's Backpack
+     * class, so even bytecode verification of this class would load it and crash the game on every
+     * install that does not have that mod. It is matched by class name instead.
+     */
     private static boolean isNativeInvseeMenu(AbstractContainerMenu menu) {
-        return menu instanceof InvseeMenu || menu instanceof EnderChestMenu;
+        return menu instanceof InvseeMenu
+                || menu instanceof EnderChestMenu
+                || READONLY_BACKPACK_MENU.equals(menu.getClass().getName());
     }
 
     /**
@@ -174,19 +174,6 @@ public final class InvseeClickInterceptor {
         if (player.containerMenu == menu) {
             // Reconcile the complete menu after handling the click. This also covers drag,
             // pickup-all, and carried-item updates without relying on vanilla's spectator path.
-            menu.broadcastFullState();
-        }
-    }
-
-    private static void handleBackpackClick(ServerPlayer player, ReadonlyBackpackMenu menu,
-                                             ServerboundContainerClickPacket packet) {
-        if (player.containerMenu != menu || !menu.stillValid(player) || !isValidSlot(menu, packet.getSlotNum())) {
-            menu.sendAllDataToRemote();
-            return;
-        }
-
-        menu.clicked(packet.getSlotNum(), packet.getButtonNum(), packet.getClickType(), player);
-        if (player.containerMenu == menu) {
             menu.broadcastFullState();
         }
     }
